@@ -44,33 +44,81 @@ export class WhatsappService implements OnModuleInit {
       } else if (response.intent === 'cancelar' && response.score > 0.7) {
         await this.client.sendMessage(message.from, 'Ação cancelada!');
       } else {
-        await this.client.sendMessage(message.from, 'Não entendi sua resposta. Por favor, responda com "sim" para confirmar ou "não" para cancelar.');
+        await this.client.sendMessage(
+          message.from,
+          'Não entendi sua resposta. Por favor, responda com "sim" para confirmar ou "não" para cancelar.'
+        );
       }
     });
 
     this.client.initialize();
   }
 
-  // Treinamento simples do NLP com exemplos para confirmar ou cancelar
+  // Treinamento robusto do NLP com exemplos variados para confirmar ou cancelar
   private async trainNlp() {
-    // Intenção de confirmação
-    this.nlpManager.addDocument('pt', 'sim', 'confirmar');
-    this.nlpManager.addDocument('pt', 'confirmo', 'confirmar');
-    this.nlpManager.addDocument('pt', 'está ok', 'confirmar');
+    // Exemplos para intenção de confirmação
+    const confirmExamples = [
+      "sim",
+      "confirmo",
+      "está ok",
+      "ok",
+      "certo",
+      "claro",
+      "afirmativo",
+      "estou de acordo",
+      "com certeza",
+      "acordo",
+      "isso mesmo",
+      "vou confirmar",
+      "confirmar atendimento",
+      "tudo certo",
+      "concordo",
+      "confirmado"
+    ];
+    confirmExamples.forEach(example => {
+      this.nlpManager.addDocument('pt', example, 'confirmar');
+    });
 
-    // Intenção de cancelamento
-    this.nlpManager.addDocument('pt', 'não', 'cancelar');
-    this.nlpManager.addDocument('pt', 'cancela', 'cancelar');
-    this.nlpManager.addDocument('pt', 'erro', 'cancelar');
+    // Exemplos para intenção de cancelamento
+    const cancelExamples = [
+      "não",
+      "não quero",
+      "cancela",
+      "cancelado",
+      "impossível",
+      "recuso",
+      "negativo",
+      "não concordo",
+      "não aceita",
+      "não posso confirmar",
+      "não desejo",
+      "cancela atendimento",
+      "deixa pra lá",
+      "nem pensar",
+      "não vou",
+      "cancelar"
+    ];
+    cancelExamples.forEach(example => {
+      this.nlpManager.addDocument('pt', example, 'cancelar');
+    });
+
+    // Intenção fallback para respostas ambíguas
+    this.nlpManager.addDocument('pt', 'não entendi', 'fallback');
+    this.nlpManager.addDocument('pt', 'pode repetir', 'fallback');
 
     // Treina o modelo
+    console.log('Treinando o modelo NLP...');
     await this.nlpManager.train();
     this.nlpManager.save();
+    console.log('Treinamento concluído.');
   }
+
+  // Formata o número para o padrão do WhatsApp
   formatNumber(number: string): string {
     return number.replace('+', '') + '@c.us';
   }
   
+  // Envia uma mensagem via WhatsApp
   async sendMessage(to: string, message: string) {
     const formattedTo = this.formatNumber(to);
     return this.client.sendMessage(formattedTo, message);

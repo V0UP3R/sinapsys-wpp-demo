@@ -46,7 +46,59 @@
             "intent": "confirmar",
             "domain": "default"
           },
+          "ok": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "cert": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "clar": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "afirm": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "acord,de,estou": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "certez,com": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "acord": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "isso,mesm": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "confirm,vou": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "atend,confirm": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "cert,tud": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "concord": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
           "nao": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "nao,quer": {
             "intent": "cancelar",
             "domain": "default"
           },
@@ -54,14 +106,63 @@
             "intent": "cancelar",
             "domain": "default"
           },
-          "erro": {
+          "impossivel": {
             "intent": "cancelar",
+            "domain": "default"
+          },
+          "recus": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "negat": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "concord,nao": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "aceit,nao": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "confirm,nao,poss": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "desej,nao": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "atend,cancel": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "deix,la,pra": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "nem,pens": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "nao,vou": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "entend,nao": {
+            "intent": "fallback",
+            "domain": "default"
+          },
+          "pod,repet": {
+            "intent": "fallback",
             "domain": "default"
           }
         },
         "intentDict": {
           "confirmar": "default",
-          "cancelar": "default"
+          "cancelar": "default",
+          "fallback": "default"
         },
         "sentences": [
           {
@@ -81,7 +182,77 @@
           },
           {
             "domain": "default",
+            "utterance": "ok",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "certo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "claro",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "afirmativo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "estou de acordo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "com certeza",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "acordo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "isso mesmo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "vou confirmar",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "confirmar atendimento",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "tudo certo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "concordo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "confirmado",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
             "utterance": "não",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "não quero",
             "intent": "cancelar"
           },
           {
@@ -91,8 +262,78 @@
           },
           {
             "domain": "default",
-            "utterance": "erro",
+            "utterance": "cancelado",
             "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "impossível",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "recuso",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "negativo",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "não concordo",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "não aceita",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "não posso confirmar",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "não desejo",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "cancela atendimento",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "deixa pra lá",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nem pensar",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "não vou",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "cancelar",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "não entendi",
+            "intent": "fallback"
+          },
+          {
+            "domain": "default",
+            "utterance": "pode repetir",
+            "intent": "fallback"
           }
         ],
         "domains": {
@@ -113,25 +354,89 @@
               "confirm": 1,
               "esta": 1,
               "ok": 1,
+              "cert": 1,
+              "clar": 1,
+              "afirm": 1,
+              "estou": 1,
+              "de": 1,
+              "acord": 1,
+              "com": 1,
+              "certez": 1,
+              "isso": 1,
+              "mesm": 1,
+              "vou": 1,
+              "atend": 1,
+              "tud": 1,
+              "concord": 1,
               "nao": 1,
+              "quer": 1,
               "cancel": 1,
-              "erro": 1
+              "impossivel": 1,
+              "recus": 1,
+              "negat": 1,
+              "aceit": 1,
+              "poss": 1,
+              "desej": 1,
+              "deix": 1,
+              "pra": 1,
+              "la": 1,
+              "nem": 1,
+              "pens": 1,
+              "entend": 1,
+              "pod": 1,
+              "repet": 1
             },
             "intents": {
               "confirmar": 1,
-              "cancelar": 1
+              "cancelar": 1,
+              "fallback": 1
             },
             "intentFeatures": {
               "confirmar": {
                 "sim": 1,
                 "confirm": 1,
                 "esta": 1,
-                "ok": 1
+                "ok": 1,
+                "cert": 1,
+                "clar": 1,
+                "afirm": 1,
+                "estou": 1,
+                "de": 1,
+                "acord": 1,
+                "com": 1,
+                "certez": 1,
+                "isso": 1,
+                "mesm": 1,
+                "vou": 1,
+                "atend": 1,
+                "tud": 1,
+                "concord": 1
               },
               "cancelar": {
                 "nao": 1,
+                "quer": 1,
                 "cancel": 1,
-                "erro": 1
+                "impossivel": 1,
+                "recus": 1,
+                "negat": 1,
+                "concord": 1,
+                "aceit": 1,
+                "poss": 1,
+                "confirm": 1,
+                "desej": 1,
+                "atend": 1,
+                "deix": 1,
+                "pra": 1,
+                "la": 1,
+                "nem": 1,
+                "pens": 1,
+                "vou": 1
+              },
+              "fallback": {
+                "nao": 1,
+                "entend": 1,
+                "pod": 1,
+                "repet": 1
               }
             },
             "featuresToIntent": {
@@ -139,7 +444,8 @@
                 "confirmar"
               ],
               "confirm": [
-                "confirmar"
+                "confirmar",
+                "cancelar"
               ],
               "esta": [
                 "confirmar"
@@ -147,14 +453,102 @@
               "ok": [
                 "confirmar"
               ],
+              "cert": [
+                "confirmar"
+              ],
+              "clar": [
+                "confirmar"
+              ],
+              "afirm": [
+                "confirmar"
+              ],
+              "estou": [
+                "confirmar"
+              ],
+              "de": [
+                "confirmar"
+              ],
+              "acord": [
+                "confirmar"
+              ],
+              "com": [
+                "confirmar"
+              ],
+              "certez": [
+                "confirmar"
+              ],
+              "isso": [
+                "confirmar"
+              ],
+              "mesm": [
+                "confirmar"
+              ],
+              "vou": [
+                "confirmar",
+                "cancelar"
+              ],
+              "atend": [
+                "confirmar",
+                "cancelar"
+              ],
+              "tud": [
+                "confirmar"
+              ],
+              "concord": [
+                "confirmar",
+                "cancelar"
+              ],
               "nao": [
+                "cancelar",
+                "fallback"
+              ],
+              "quer": [
                 "cancelar"
               ],
               "cancel": [
                 "cancelar"
               ],
-              "erro": [
+              "impossivel": [
                 "cancelar"
+              ],
+              "recus": [
+                "cancelar"
+              ],
+              "negat": [
+                "cancelar"
+              ],
+              "aceit": [
+                "cancelar"
+              ],
+              "poss": [
+                "cancelar"
+              ],
+              "desej": [
+                "cancelar"
+              ],
+              "deix": [
+                "cancelar"
+              ],
+              "pra": [
+                "cancelar"
+              ],
+              "la": [
+                "cancelar"
+              ],
+              "nem": [
+                "cancelar"
+              ],
+              "pens": [
+                "cancelar"
+              ],
+              "entend": [
+                "fallback"
+              ],
+              "pod": [
+                "fallback"
+              ],
+              "repet": [
+                "fallback"
               ]
             },
             "neuralNetwork": {
@@ -174,34 +568,157 @@
                 "confirm",
                 "esta",
                 "ok",
+                "cert",
+                "clar",
+                "afirm",
+                "estou",
+                "de",
+                "acord",
+                "com",
+                "certez",
+                "isso",
+                "mesm",
+                "vou",
+                "atend",
+                "tud",
+                "concord",
                 "nao",
+                "quer",
                 "cancel",
-                "erro"
+                "impossivel",
+                "recus",
+                "negat",
+                "aceit",
+                "poss",
+                "desej",
+                "deix",
+                "pra",
+                "la",
+                "nem",
+                "pens",
+                "entend",
+                "pod",
+                "repet"
               ],
               "intents": [
                 "confirmar",
-                "cancelar"
+                "cancelar",
+                "fallback"
               ],
               "perceptrons": [
                 [
-                  9.417777061462402,
-                  9.4107666015625,
-                  4.75752592086792,
-                  4.75752592086792,
-                  -4.705905914306641,
-                  -4.691282749176025,
-                  -4.675860404968262,
-                  4.757051911569798
+                  6.68211030960083,
+                  6.677980422973633,
+                  0.017181549221277237,
+                  6.670007705688477,
+                  6.672203540802002,
+                  6.6814446449279785,
+                  6.6815690994262695,
+                  -0.0006366815068759024,
+                  -0.0006366815068759024,
+                  6.680935859680176,
+                  3.3401904106140137,
+                  3.3401904106140137,
+                  3.3402302265167236,
+                  3.3402302265167236,
+                  0.003167829243466258,
+                  0.003310754429548979,
+                  0.012861580587923527,
+                  6.643013000488281,
+                  -14.22811508178711,
+                  -1.0962978601455688,
+                  -7.645694732666016,
+                  -7.605635643005371,
+                  -7.605536460876465,
+                  -7.605433464050293,
+                  -0.45378226041793823,
+                  -3.3888370990753174,
+                  -0.28851938247680664,
+                  -2.5351955890655518,
+                  -2.5351955890655518,
+                  -2.5351955890655518,
+                  -3.8026299476623535,
+                  -3.8026299476623535,
+                  -0.08393517881631851,
+                  -3.8026113510131836,
+                  -3.8026113510131836,
+                  7.605891827731876
                 ],
                 [
-                  -5.611927509307861,
-                  -5.590497970581055,
-                  -2.852032423019409,
-                  -2.852032423019409,
-                  8.505056381225586,
-                  8.50368595123291,
-                  8.4848051071167,
-                  5.719035905912853
+                  -4.168191909790039,
+                  -4.7844085693359375,
+                  -1.5059205293655396,
+                  -4.212789535522461,
+                  -4.166271209716797,
+                  -4.109060764312744,
+                  -4.092097282409668,
+                  -1.0367629528045654,
+                  -1.0367629528045654,
+                  -4.103897571563721,
+                  -2.133173704147339,
+                  -2.133173704147339,
+                  -2.1145341396331787,
+                  -2.1145341396331787,
+                  -0.7396275997161865,
+                  0.0041680713184177876,
+                  -0.9661226868629456,
+                  -1.6868845224380493,
+                  12.374615669250488,
+                  -0.6384721398353577,
+                  11.610635757446289,
+                  11.544076919555664,
+                  11.539066314697266,
+                  11.534038543701172,
+                  -0.7158236503601074,
+                  4.0373334884643555,
+                  -0.7354414463043213,
+                  3.859943151473999,
+                  3.859943151473999,
+                  3.859943151473999,
+                  5.778529167175293,
+                  5.778529167175293,
+                  -15.022730827331543,
+                  -2.3183159828186035,
+                  -2.3183159828186035,
+                  2.675251885043093
+                ],
+                [
+                  -0.5711733102798462,
+                  -1.060344934463501,
+                  -0.26681357622146606,
+                  -0.6476830244064331,
+                  -0.6055112481117249,
+                  -0.5429317951202393,
+                  -0.5350492000579834,
+                  -0.18672949075698853,
+                  -0.18672949075698853,
+                  -0.5711719989776611,
+                  -0.330849289894104,
+                  -0.330849289894104,
+                  -0.3182622492313385,
+                  -0.3182622492313385,
+                  -1.3078973293304443,
+                  -0.1109720766544342,
+                  -0.17887695133686066,
+                  -1.4447572231292725,
+                  -0.014976335689425468,
+                  -1.4639021158218384,
+                  -0.4925508201122284,
+                  -0.42073652148246765,
+                  -0.4162810742855072,
+                  -0.4113767743110657,
+                  -1.3882722854614258,
+                  -0.4916999340057373,
+                  -1.3377366065979004,
+                  -0.13864485919475555,
+                  -0.13864485919475555,
+                  -0.13864485919475555,
+                  -0.2045842856168747,
+                  -0.2045842856168747,
+                  14.248677253723145,
+                  7.123190402984619,
+                  7.123190402984619,
+                  0.037940332098191365
                 ]
               ]
             }
@@ -225,7 +742,63 @@
       ],
       [
         "pt",
+        "ok"
+      ],
+      [
+        "pt",
+        "certo"
+      ],
+      [
+        "pt",
+        "claro"
+      ],
+      [
+        "pt",
+        "afirmativo"
+      ],
+      [
+        "pt",
+        "estou de acordo"
+      ],
+      [
+        "pt",
+        "com certeza"
+      ],
+      [
+        "pt",
+        "acordo"
+      ],
+      [
+        "pt",
+        "isso mesmo"
+      ],
+      [
+        "pt",
+        "vou confirmar"
+      ],
+      [
+        "pt",
+        "confirmar atendimento"
+      ],
+      [
+        "pt",
+        "tudo certo"
+      ],
+      [
+        "pt",
+        "concordo"
+      ],
+      [
+        "pt",
+        "confirmado"
+      ],
+      [
+        "pt",
         "não"
+      ],
+      [
+        "pt",
+        "não quero"
       ],
       [
         "pt",
@@ -233,7 +806,63 @@
       ],
       [
         "pt",
-        "erro"
+        "cancelado"
+      ],
+      [
+        "pt",
+        "impossível"
+      ],
+      [
+        "pt",
+        "recuso"
+      ],
+      [
+        "pt",
+        "negativo"
+      ],
+      [
+        "pt",
+        "não concordo"
+      ],
+      [
+        "pt",
+        "não aceita"
+      ],
+      [
+        "pt",
+        "não posso confirmar"
+      ],
+      [
+        "pt",
+        "não desejo"
+      ],
+      [
+        "pt",
+        "cancela atendimento"
+      ],
+      [
+        "pt",
+        "deixa pra lá"
+      ],
+      [
+        "pt",
+        "nem pensar"
+      ],
+      [
+        "pt",
+        "não vou"
+      ],
+      [
+        "pt",
+        "cancelar"
+      ],
+      [
+        "pt",
+        "não entendi"
+      ],
+      [
+        "pt",
+        "pode repetir"
       ]
     ]
   },
