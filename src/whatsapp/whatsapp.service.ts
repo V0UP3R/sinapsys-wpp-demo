@@ -15,6 +15,9 @@ export class WhatsappService implements OnModuleInit {
     this.trainNlp();
     // Inicializa o cliente do WhatsApp com autenticação local (salva a sessão)
     this.client = new Client({
+      puppeteer: {
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      },
       authStrategy: new LocalAuth(),
     });
   }
@@ -64,9 +67,12 @@ export class WhatsappService implements OnModuleInit {
     await this.nlpManager.train();
     this.nlpManager.save();
   }
-
-  // Método para disparar mensagem via WhatsApp
+  formatNumber(number: string): string {
+    return number.replace('+', '') + '@c.us';
+  }
+  
   async sendMessage(to: string, message: string) {
-    return this.client.sendMessage(to, message);
+    const formattedTo = this.formatNumber(to);
+    return this.client.sendMessage(formattedTo, message);
   }
 }

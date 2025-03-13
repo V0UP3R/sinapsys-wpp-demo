@@ -1,0 +1,261 @@
+{
+  "settings": {
+    "languages": [
+      "pt"
+    ],
+    "tag": "nlp",
+    "threshold": 0.5,
+    "autoLoad": true,
+    "autoSave": true,
+    "modelFileName": "model.nlp",
+    "executeActionsBeforeAnswers": false,
+    "calculateSentiment": true
+  },
+  "nluManager": {
+    "settings": {
+      "tag": "nlu-manager"
+    },
+    "locales": [
+      "pt"
+    ],
+    "languageNames": {},
+    "domainManagers": {
+      "pt": {
+        "settings": {
+          "locale": "pt",
+          "trainByDomain": false,
+          "tag": "domain-manager-pt",
+          "nluByDomain": {
+            "default": {
+              "className": "NeuralNlu",
+              "settings": {}
+            }
+          },
+          "useStemDict": true
+        },
+        "stemDict": {
+          "sim": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "confirm": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "esta,ok": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "nao": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "cancel": {
+            "intent": "cancelar",
+            "domain": "default"
+          },
+          "erro": {
+            "intent": "cancelar",
+            "domain": "default"
+          }
+        },
+        "intentDict": {
+          "confirmar": "default",
+          "cancelar": "default"
+        },
+        "sentences": [
+          {
+            "domain": "default",
+            "utterance": "sim",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "confirmo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "está ok",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "não",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "cancela",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "erro",
+            "intent": "cancelar"
+          }
+        ],
+        "domains": {
+          "master_domain": {
+            "settings": {
+              "locale": "pt",
+              "tag": "nlu-pt",
+              "keepStopwords": true,
+              "nonefeatureValue": 1,
+              "nonedeltaMultiplier": 1.2,
+              "spellCheck": false,
+              "spellCheckDistance": 1,
+              "filterZeros": true,
+              "log": true
+            },
+            "features": {
+              "sim": 1,
+              "confirm": 1,
+              "esta": 1,
+              "ok": 1,
+              "nao": 1,
+              "cancel": 1,
+              "erro": 1
+            },
+            "intents": {
+              "confirmar": 1,
+              "cancelar": 1
+            },
+            "intentFeatures": {
+              "confirmar": {
+                "sim": 1,
+                "confirm": 1,
+                "esta": 1,
+                "ok": 1
+              },
+              "cancelar": {
+                "nao": 1,
+                "cancel": 1,
+                "erro": 1
+              }
+            },
+            "featuresToIntent": {
+              "sim": [
+                "confirmar"
+              ],
+              "confirm": [
+                "confirmar"
+              ],
+              "esta": [
+                "confirmar"
+              ],
+              "ok": [
+                "confirmar"
+              ],
+              "nao": [
+                "cancelar"
+              ],
+              "cancel": [
+                "cancelar"
+              ],
+              "erro": [
+                "cancelar"
+              ]
+            },
+            "neuralNetwork": {
+              "settings": {
+                "locale": "pt",
+                "tag": "nlu-pt",
+                "keepStopwords": true,
+                "nonefeatureValue": 1,
+                "nonedeltaMultiplier": 1.2,
+                "spellCheck": false,
+                "spellCheckDistance": 1,
+                "filterZeros": true,
+                "log": true
+              },
+              "features": [
+                "sim",
+                "confirm",
+                "esta",
+                "ok",
+                "nao",
+                "cancel",
+                "erro"
+              ],
+              "intents": [
+                "confirmar",
+                "cancelar"
+              ],
+              "perceptrons": [
+                [
+                  9.417777061462402,
+                  9.4107666015625,
+                  4.75752592086792,
+                  4.75752592086792,
+                  -4.705905914306641,
+                  -4.691282749176025,
+                  -4.675860404968262,
+                  4.757051911569798
+                ],
+                [
+                  -5.611927509307861,
+                  -5.590497970581055,
+                  -2.852032423019409,
+                  -2.852032423019409,
+                  8.505056381225586,
+                  8.50368595123291,
+                  8.4848051071167,
+                  5.719035905912853
+                ]
+              ]
+            }
+          }
+        }
+      }
+    },
+    "intentDomains": {},
+    "extraSentences": [
+      [
+        "pt",
+        "sim"
+      ],
+      [
+        "pt",
+        "confirmo"
+      ],
+      [
+        "pt",
+        "está ok"
+      ],
+      [
+        "pt",
+        "não"
+      ],
+      [
+        "pt",
+        "cancela"
+      ],
+      [
+        "pt",
+        "erro"
+      ]
+    ]
+  },
+  "ner": {
+    "settings": {
+      "tag": "ner",
+      "entityPreffix": "%",
+      "entitySuffix": "%"
+    },
+    "rules": {}
+  },
+  "nlgManager": {
+    "settings": {
+      "tag": "nlg-manager"
+    },
+    "responses": {}
+  },
+  "actionManager": {
+    "settings": {
+      "tag": "action-manager"
+    },
+    "actions": {}
+  },
+  "slotManager": {}
+}
