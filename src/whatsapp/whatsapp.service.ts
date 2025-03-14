@@ -1,4 +1,3 @@
-// src/whatsapp/whatsapp.service.ts
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode-terminal';
@@ -116,6 +115,7 @@ export class WhatsappService implements OnModuleInit {
   // Envia uma mensagem via WhatsApp
   async sendMessage(to: string, message: string) {
     const formattedTo = this.formatNumber(to);
+    this.pendingConfirmations.add(formattedTo);
     return this.client.sendMessage(formattedTo, message);
   }
 
