@@ -39,7 +39,7 @@
     "whatsapp-web.js": "^1.26.0"
   },
   "engines" : {
-   "node" : "16.x"
+   "node" : "18.x"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.0.0",
