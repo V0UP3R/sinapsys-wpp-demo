@@ -117,7 +117,8 @@ export class WhatsappService implements OnModuleInit {
 
     console.log('Treinando o modelo NLP...');
     await this.nlpManager.train();
-    this.nlpManager.save();
+
+    await this.nlpManager.save('/tmp/model.nlp');
     console.log('Treinamento concluído.');
   }
 
