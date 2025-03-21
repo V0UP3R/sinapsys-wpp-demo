@@ -3,7 +3,8 @@ import { Client, LocalAuth } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode-terminal';
 import { NlpManager } from 'node-nlp';
 import chromium from 'chrome-aws-lambda';
-
+import * as path from 'path';
+import * as fs from 'fs';
 @Injectable()
 export class WhatsappService implements OnModuleInit {
   private client: Client;
@@ -11,22 +12,35 @@ export class WhatsappService implements OnModuleInit {
   // Chats que aguardam confirmação
   private pendingConfirmations: Set<string> = new Set();
   private logger = new Logger(WhatsappService.name);
+  private readonly modelPath = '/tmp/model.nlp'; // Caminho explícito
+
   constructor() {
     // Inicializa o NLP Manager para o idioma português
     this.nlpManager = new NlpManager({ 
       languages: ['pt'], 
-      modelFileName: '/tmp/model.nlp' // Define o caminho completo
+      autoSave: false,       // Desativa autosave
+      autoLoad: false,       // Desativa autoload
+      modelFileName: this.modelPath
     });
+    // this.trainNlp();
   }
 
   async onModuleInit() {
-    // Tenta carregar o modelo a partir do caminho gravável (/tmp/model.nlp)
+    
+    if (!fs.existsSync('/tmp')) {
+      fs.mkdirSync('/tmp');
+    }
+
     try {
-      await this.nlpManager.load();
-      this.logger.log('Modelo carregado a partir de /tmp/model.nlp');
+      // Carrega usando o caminho explícito
+      if (fs.existsSync(this.modelPath)) {
+        await this.nlpManager.load(this.modelPath);
+      } else {
+        throw new Error('Modelo não encontrado');
+      }
     } catch (error) {
-      this.logger.log('Modelo não encontrado. Treinando o modelo...');
       await this.trainNlp();
+      await this.nlpManager.save(this.modelPath);
     }
 
     // Obtém o caminho executável do Chromium provido pelo chrome-aws-lambda
@@ -172,7 +186,7 @@ export class WhatsappService implements OnModuleInit {
     await this.nlpManager.train();
 
     // Salva o modelo no diretório gravável (/tmp)
-    await this.nlpManager.save();
+    await this.nlpManager.save(this.modelPath);
     this.logger.log('Treinamento concluído.');
   }
 
