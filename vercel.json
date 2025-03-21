@@ -3,10 +3,10 @@
 		{
 			"src": "src/main.ts",
 			"use": "@vercel/node",
-			"config": {
+      "config": {
         "includeFiles": [
-          "src/**/*.nlp",
-          "/tmp/**"
+          "tmp/**",
+          "model.nlp"
         ]
       }
 		}

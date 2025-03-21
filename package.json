@@ -10,7 +10,7 @@
     "vercel-build": "cross-env NODE_ENV=production && mkdir -p /tmp/.wwebjs_auth/session && nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
-    "train-model": "ts-node -e \"import { WhatsappService } from './src/whatsapp/whatsapp.service'; void WhatsappService.trainModel();\"",
+    "train-model": "ts-node src/whatsapp/whatsapp.service.ts",
     "start:debug": "nest start --debug --watch",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",

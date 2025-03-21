@@ -1,54 +1,73 @@
 // src/whatsapp/whatsapp.service.ts
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Client, LocalAuth } from 'whatsapp-web.js';
-import * as qrcode from 'qrcode-terminal';
 import { NlpManager } from 'node-nlp';
 import * as puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
 import path from 'path';
+import { existsSync, mkdirSync } from 'fs';
 
 @Injectable()
 export class WhatsappService implements OnModuleInit {
   private client: Client;
   private nlpManager: NlpManager;
-  // Chats que aguardam confirmação
   private pendingConfirmations: Set<string> = new Set();
-  private modelPath = process.env.NODE_ENV === 'production'
-  ? '/tmp/model.nlp'
-  : 'model.nlp';
+  private modelPath: string;
+  private authPath: string;
 
   constructor() {
-    // Inicializa o NLP Manager para o idioma português
+    // Configura caminhos dinâmicos
+    this.modelPath = process.env.NODE_ENV === 'production'
+      ? '/tmp/model.nlp'
+      : path.join(process.cwd(), 'model.nlp');
+
+    this.authPath = process.env.NODE_ENV === 'production'
+      ? '/tmp/.wwebjs_auth'
+      : path.join(process.cwd(), '.wwebjs_auth');
+
+    // Garante a criação dos diretórios
+    this.createDirectories();
+
+    // Inicializa NLP
     this.nlpManager = new NlpManager({ 
-      languages: ['pt'] ,
+      languages: ['pt'],
       modelFileName: this.modelPath
     });
-    if (process.env.NODE_ENV === 'production') {
-      this.loadTrainedModel();
-    } else {
-      this.trainNlp();
+
+    // Carrega ou treina o modelo
+    process.env.NODE_ENV === 'production' 
+      ? this.loadTrainedModel() 
+      : this.trainNlp();
+  }
+
+  private createDirectories() {
+    // Cria diretório para autenticação
+    if (!existsSync(this.authPath)) {
+      mkdirSync(this.authPath, { recursive: true });
+    }
+
+    // Cria diretório para modelos NLP
+    const modelDir = path.dirname(this.modelPath);
+    if (!existsSync(modelDir)) {
+      mkdirSync(modelDir, { recursive: true });
     }
   }
 
   public static async trainModel() {
-    // Crie uma nova instância explicitamente
-    const serviceInstance = new WhatsappService();
-    await serviceInstance.trainNlp();
+    const service = new WhatsappService();
+    await service.trainNlp();
   }
 
   private async loadTrainedModel() {
-    const modelPath = process.env.NODE_ENV === 'production' 
-      ? '/tmp/model.nlp' 
-      : path.join(__dirname, 'model.nlp');
-  
     try {
-      await this.nlpManager.load(modelPath);
+      await this.nlpManager.load(this.modelPath);
       console.log('Modelo NLP carregado com sucesso');
     } catch (error) {
       console.log('Modelo não encontrado, treinando novo...');
       await this.trainNlp();
     }
   }
+
   private async getBrowserConfig() {
     const isProduction = process.env.NODE_ENV === 'production';
     
@@ -58,13 +77,13 @@ export class WhatsappService implements OnModuleInit {
         executablePath: await chromium.executablePath(),
         headless: true,
       };
-    } else {
-      return {
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        executablePath: process.env.CHROME_PATH || require('puppeteer').executablePath(), // Caminho comum do Chrome no Windows
-        headless: false // Melhor para debug local
-      };
     }
+
+    return {
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      executablePath: process.env.CHROME_PATH || puppeteer.executablePath(),
+      headless: false
+    };
   }
 
   async onModuleInit() {
@@ -73,49 +92,51 @@ export class WhatsappService implements OnModuleInit {
     this.client = new Client({
       puppeteer: browserConfig,
       authStrategy: new LocalAuth({
-        dataPath: process.env.NODE_ENV === 'production' 
-          ? '/tmp/.wwebjs_auth' 
-          : path.join(__dirname, '../../.wwebjs_auth') // Caminho relativo para Windows
+        dataPath: this.authPath
       })
     });
 
+    this.setupEventHandlers();
+    await this.client.initialize();
+  }
+
+  private setupEventHandlers() {
     this.client.on('qr', (qr) => {
       const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
-      console.log('Acesse o QR Code via o link:', qrCodeUrl);
+      console.log('QR Code URL:', qrCodeUrl);
     });
 
     this.client.on('ready', () => {
       console.log('Cliente do WhatsApp pronto!');
     });
 
-    // Processa mensagens somente se o chat estiver aguardando confirmação
     this.client.on('message', async (message) => {
       console.log('Mensagem recebida:', message.body);
       
-      if (!this.pendingConfirmations.has(message.from)) {
-        return;
-      }
-      
-      // Pré-processa o texto (normaliza: minúsculas, remove acentos, etc.)
-      const normalizedText = this.normalizeText(message.body);
-      const response = await this.nlpManager.process('pt', normalizedText);
+      if (!this.pendingConfirmations.has(message.from)) return;
 
-      // Ajuste o threshold de confiança conforme necessário (exemplo: 0.8)
-      if (response.intent === 'confirmar' && response.score > 0.8) {
-        await this.client.sendMessage(message.from, 'Ação confirmada!');
-        this.pendingConfirmations.delete(message.from);
-      } else if (response.intent === 'cancelar' && response.score > 0.8) {
-        await this.client.sendMessage(message.from, 'Ação cancelada!');
-        this.pendingConfirmations.delete(message.from);
-      } else {
-        console.log('Resposta não foi suficientemente clara. Nenhuma ação tomada.');
-      }
+      const response = await this.processMessage(message.body);
+      await this.handleConfirmation(response, message.from);
     });
-
-    this.client.initialize();
   }
 
-  // Função para normalizar o texto (exemplo simples)
+  private async processMessage(text: string) {
+    const normalizedText = this.normalizeText(text);
+    return this.nlpManager.process('pt', normalizedText);
+  }
+
+  private async handleConfirmation(response: any, from: string) {
+    if (response.intent === 'confirmar' && response.score > 0.8) {
+      await this.client.sendMessage(from, 'Ação confirmada!');
+      this.pendingConfirmations.delete(from);
+    } else if (response.intent === 'cancelar' && response.score > 0.8) {
+      await this.client.sendMessage(from, 'Ação cancelada!');
+      this.pendingConfirmations.delete(from);
+    } else {
+      console.log('Resposta não reconhecida');
+    }
+  }
+
   private normalizeText(text: string): string {
     return text
       .toLowerCase()
@@ -124,9 +145,8 @@ export class WhatsappService implements OnModuleInit {
       .trim();
   }
 
-  // Treinamento robusto do NLP com muitos exemplos para confirmar ou cancelar
   private async trainNlp() {
-    // Exemplos para intenção de confirmação
+    // Exemplos de treinamento
     const confirmExamples = [
       "sim", "confirmo", "está ok", "ok", "certo", "claro", "afirmativo",
       "estou de acordo", "com certeza", "acordo", "isso mesmo", "vou confirmar",
@@ -135,11 +155,7 @@ export class WhatsappService implements OnModuleInit {
       "afirma sim", "com certeza, confirma", "sem duvidas, confirmo",
       "estou de acordo, pode prosseguir", "confirmado, prossiga", "Quero", "Desejo", "Desejo confirmar"
     ];
-    confirmExamples.forEach(example => {
-      this.nlpManager.addDocument('pt', this.normalizeText(example), 'confirmar');
-    });
 
-    // Exemplos para intenção de cancelamento
     const cancelExamples = [
       "não", "não quero", "cancela", "cancelado", "impossivel", "recuso",
       "negativo", "não concordo", "não aceita", "não posso confirmar",
@@ -148,41 +164,30 @@ export class WhatsappService implements OnModuleInit {
       "não quero confirmar", "cancelar o atendimento", "não, obrigado",
       "não, recuso", "não, não concordo", "cancelado, por favor interrompa", "pare, não quero"
     ];
-    cancelExamples.forEach(example => {
-      this.nlpManager.addDocument('pt', this.normalizeText(example), 'cancelar');
-    });
 
-    // Exemplos para fallback (opcional)
-    this.nlpManager.addDocument('pt', 'não entendi', 'fallback');
-    this.nlpManager.addDocument('pt', 'pode repetir', 'fallback');
+    // Adiciona exemplos
+    confirmExamples.forEach(ex => 
+      this.nlpManager.addDocument('pt', this.normalizeText(ex), 'confirmar'));
+    
+    cancelExamples.forEach(ex => 
+      this.nlpManager.addDocument('pt', this.normalizeText(ex), 'cancelar'));
 
-    console.log('Treinando o modelo NLP...');
+    // Treina e salva o modelo
+    console.log('Iniciando treinamento NLP...');
     await this.nlpManager.train();
-    // Salvar apenas se não estiver em produção
-    if (process.env.NODE_ENV !== 'production') {
-      this.nlpManager.save('model.nlp');
-    } else {
-      // Na Vercel, salvar no diretório temporário
-      const tmpPath = '/tmp/model.nlp';
-      this.nlpManager.save(tmpPath);
-      console.log(`Modelo salvo em ${tmpPath}`);
-    }
-    this.nlpManager.save();
-    console.log('Treinamento concluído.');
+    await this.nlpManager.save(this.modelPath);
+    console.log('Modelo treinado e salvo em:', this.modelPath);
   }
 
-  // Formata o número para o padrão do WhatsApp
   formatNumber(number: string): string {
     return number.replace('+', '') + '@c.us';
   }
-  
-  // Envia uma mensagem via WhatsApp
+
   async sendMessage(to: string, message: string) {
     const formattedTo = this.formatNumber(to);
     return this.client.sendMessage(formattedTo, message);
   }
 
-  // Envia uma solicitação de confirmação e registra o chat
   async requestConfirmation(to: string, message: string) {
     const formattedTo = this.formatNumber(to);
     await this.client.sendMessage(formattedTo, message);
