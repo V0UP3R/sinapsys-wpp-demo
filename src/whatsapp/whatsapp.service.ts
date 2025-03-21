@@ -50,7 +50,7 @@ export class WhatsappService implements OnModuleInit {
     this.client = new Client({
       authStrategy: new LocalAuth({ 
         clientId: 'default',
-        dataPath: '/tmp/whatsapp-session'
+        // dataPath: '/tmp/whatsapp-session'
       }),
       puppeteer: {
         args: [
@@ -61,7 +61,8 @@ export class WhatsappService implements OnModuleInit {
           '--no-zygote'
         ],
         executablePath: await chromium.executablePath,
-        headless: chromium.headless
+        headless: chromium.headless,
+        userDataDir: '/tmp/chromium' // Diretório gravável
       }
     });
 
