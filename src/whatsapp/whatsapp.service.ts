@@ -26,7 +26,7 @@ export class WhatsappService implements OnModuleInit {
   }
 
   async onModuleInit() {
-    
+
     if (!fs.existsSync('/tmp')) {
       fs.mkdirSync('/tmp');
     }
@@ -48,16 +48,22 @@ export class WhatsappService implements OnModuleInit {
 
     // Inicializa o cliente do WhatsApp com autenticação local e as configurações do chrome-aws-lambda
     this.client = new Client({
-      authStrategy: new LocalAuth({
-        clientId: 'default', // ou outro identificador que desejar
-        dataPath: '/tmp/whatsapp-session', // caminho para armazenar os dados da sessão
+      authStrategy: new LocalAuth({ 
+        clientId: 'default',
+        dataPath: '/tmp/whatsapp-session'
       }),
       puppeteer: {
-        args: chromium.args,
-        defaultViewport: chromium.defaultViewport,
-        executablePath, // Caminho para o Chromium
+        args: [
+          ...chromium.args,
+          '--disable-gpu',
+          '--no-sandbox',
+          '--single-process',
+          '--no-zygote'
+        ],
+        executablePath: await chromium.executablePath,
         headless: chromium.headless,
-      },
+        userDataDir: '/tmp/chromium' // Diretório gravável
+      }
     });
 
     this.client.on('qr', (qr) => {
