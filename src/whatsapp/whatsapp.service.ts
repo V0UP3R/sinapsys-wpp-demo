@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode-terminal';
 import { NlpManager } from 'node-nlp';
@@ -10,19 +10,22 @@ export class WhatsappService implements OnModuleInit {
   private nlpManager: NlpManager;
   // Chats que aguardam confirmação
   private pendingConfirmations: Set<string> = new Set();
-
+  private logger = new Logger(WhatsappService.name);
   constructor() {
     // Inicializa o NLP Manager para o idioma português
-    this.nlpManager = new NlpManager({ languages: ['pt'] });
+    this.nlpManager = new NlpManager({ 
+      languages: ['pt'], 
+      modelFileName: '/tmp/model.nlp' // Define o caminho completo
+    });
   }
 
   async onModuleInit() {
     // Tenta carregar o modelo a partir do caminho gravável (/tmp/model.nlp)
     try {
-      await this.nlpManager.load('/tmp/model.nlp');
-      console.log('Modelo carregado a partir de /tmp/model.nlp');
+      await this.nlpManager.load();
+      this.logger.log('Modelo carregado a partir de /tmp/model.nlp');
     } catch (error) {
-      console.log('Modelo não encontrado. Treinando o modelo...');
+      this.logger.log('Modelo não encontrado. Treinando o modelo...');
       await this.trainNlp();
     }
 
@@ -47,18 +50,18 @@ export class WhatsappService implements OnModuleInit {
       const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(
         qr,
       )}&size=300x300`;
-      console.log('Acesse o QR Code via o link:', qrCodeUrl);
+      this.logger.log('Acesse o QR Code via o link:', qrCodeUrl);
       // Também exibe o QR no terminal:
       qrcode.generate(qr, { small: true });
     });
 
     this.client.on('ready', () => {
-      console.log('Cliente do WhatsApp pronto!');
+      this.logger.log('Cliente do WhatsApp pronto!');
     });
 
     // Processa mensagens somente se o chat estiver aguardando confirmação
     this.client.on('message', async (message) => {
-      console.log('Mensagem recebida:', message.body);
+      this.logger.log('Mensagem recebida:', message.body);
 
       if (!this.pendingConfirmations.has(message.from)) {
         return;
@@ -76,7 +79,7 @@ export class WhatsappService implements OnModuleInit {
         await this.client.sendMessage(message.from, 'Ação cancelada!');
         this.pendingConfirmations.delete(message.from);
       } else {
-        console.log('Resposta não foi suficientemente clara. Nenhuma ação tomada.');
+        this.logger.error('Resposta não foi suficientemente clara. Nenhuma ação tomada.');
       }
     });
 
@@ -165,12 +168,12 @@ export class WhatsappService implements OnModuleInit {
     this.nlpManager.addDocument('pt', 'não entendi', 'fallback');
     this.nlpManager.addDocument('pt', 'pode repetir', 'fallback');
 
-    console.log('Treinando o modelo NLP...');
+    this.logger.log('Treinando o modelo NLP...');
     await this.nlpManager.train();
 
     // Salva o modelo no diretório gravável (/tmp)
-    await this.nlpManager.save('/tmp/model.nlp');
-    console.log('Treinamento concluído.');
+    await this.nlpManager.save();
+    this.logger.log('Treinamento concluído.');
   }
 
   // Formata o número para o padrão do WhatsApp
