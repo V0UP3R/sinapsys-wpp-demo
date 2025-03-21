@@ -3,6 +3,9 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode-terminal';
 import { NlpManager } from 'node-nlp';
+import * as puppeteer from 'puppeteer-core';
+import chromium from '@sparticuz/chromium';
+import path from 'path';
 
 @Injectable()
 export class WhatsappService implements OnModuleInit {
@@ -15,18 +18,38 @@ export class WhatsappService implements OnModuleInit {
     // Inicializa o NLP Manager para o idioma português
     this.nlpManager = new NlpManager({ languages: ['pt'] });
     this.trainNlp();
-    // Inicializa o cliente do WhatsApp com autenticação local
-    this.client = new Client({
-      puppeteer: {
+  }
+
+  private async getBrowserConfig() {
+    const isProduction = process.env.NODE_ENV === 'production';
+    
+    if (isProduction) {
+      return {
+        args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox'],
+        executablePath: await chromium.executablePath(),
+        headless: true,
+      };
+    } else {
+      return {
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
-      },
-      authStrategy: new LocalAuth({
-        dataPath: '/tmp/.wwebjs_auth' // ← Adicione esta configuração
-      }),    
-    });
+        executablePath: process.env.CHROME_PATH || require('puppeteer').executablePath(), // Caminho comum do Chrome no Windows
+        headless: false // Melhor para debug local
+      };
+    }
   }
 
   async onModuleInit() {
+    const browserConfig = await this.getBrowserConfig();
+
+    this.client = new Client({
+      puppeteer: browserConfig,
+      authStrategy: new LocalAuth({
+        dataPath: process.env.NODE_ENV === 'production' 
+          ? '/tmp/.wwebjs_auth' 
+          : path.join(__dirname, '../../.wwebjs_auth') // Caminho relativo para Windows
+      })
+    });
+
     this.client.on('qr', (qr) => {
       const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
       console.log('Acesse o QR Code via o link:', qrCodeUrl);

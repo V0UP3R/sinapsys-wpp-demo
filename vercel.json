@@ -1,20 +1,18 @@
 {
-	"builds":[
-		{
-			"src": "src/main.ts",
-			"use": "@vercel/node"
-		}
-	],
-	"routes":[{
-		"src":"/(.*)",
-		"dest":"src/main.ts",
-		"methods":[
-			"GET",
-			"POST",
-			"PUT",
-			"PATCH",
-			"DELETE",
-			"OPTIONS"
-		]
-	}]
+  "version": 2,
+  "builds": [
+    {
+      "src": "dist/main.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "dist/main.js"
+    }
+  ],
+  "env": {
+    "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD": "true"
+  }
 }
