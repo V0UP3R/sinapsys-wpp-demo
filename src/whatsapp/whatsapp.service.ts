@@ -61,8 +61,7 @@ export class WhatsappService implements OnModuleInit {
           '--no-zygote'
         ],
         executablePath: await chromium.executablePath,
-        headless: chromium.headless,
-        userDataDir: '/tmp/chromium' // Diretório gravável
+        headless: chromium.headless
       }
     });
 
