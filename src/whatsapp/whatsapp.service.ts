@@ -13,13 +13,42 @@ export class WhatsappService implements OnModuleInit {
   private nlpManager: NlpManager;
   // Chats que aguardam confirmação
   private pendingConfirmations: Set<string> = new Set();
+  private modelPath = process.env.NODE_ENV === 'production'
+  ? '/tmp/model.nlp'
+  : 'model.nlp';
 
   constructor() {
     // Inicializa o NLP Manager para o idioma português
-    this.nlpManager = new NlpManager({ languages: ['pt'] });
-    this.trainNlp();
+    this.nlpManager = new NlpManager({ 
+      languages: ['pt'] ,
+      modelFileName: this.modelPath
+    });
+    if (process.env.NODE_ENV === 'production') {
+      this.loadTrainedModel();
+    } else {
+      this.trainNlp();
+    }
   }
 
+  public static async trainModel() {
+    // Crie uma nova instância explicitamente
+    const serviceInstance = new WhatsappService();
+    await serviceInstance.trainNlp();
+  }
+
+  private async loadTrainedModel() {
+    const modelPath = process.env.NODE_ENV === 'production' 
+      ? '/tmp/model.nlp' 
+      : path.join(__dirname, 'model.nlp');
+  
+    try {
+      await this.nlpManager.load(modelPath);
+      console.log('Modelo NLP carregado com sucesso');
+    } catch (error) {
+      console.log('Modelo não encontrado, treinando novo...');
+      await this.trainNlp();
+    }
+  }
   private async getBrowserConfig() {
     const isProduction = process.env.NODE_ENV === 'production';
     
@@ -129,6 +158,15 @@ export class WhatsappService implements OnModuleInit {
 
     console.log('Treinando o modelo NLP...');
     await this.nlpManager.train();
+    // Salvar apenas se não estiver em produção
+    if (process.env.NODE_ENV !== 'production') {
+      this.nlpManager.save('model.nlp');
+    } else {
+      // Na Vercel, salvar no diretório temporário
+      const tmpPath = '/tmp/model.nlp';
+      this.nlpManager.save(tmpPath);
+      console.log(`Modelo salvo em ${tmpPath}`);
+    }
     this.nlpManager.save();
     console.log('Treinamento concluído.');
   }
