@@ -47,23 +47,23 @@ export class WhatsappService implements OnModuleInit {
     const executablePath = await chromium.executablePath;
 
     // Inicializa o cliente do WhatsApp com autenticação local e as configurações do chrome-aws-lambda
-      this.client = new Client({
-        authStrategy: new LocalAuth({ 
-          clientId: 'default',
-          dataPath: '/tmp/whatsapp-session'
-        }),
-        puppeteer: {
-          args: [
-            ...chromium.args,
-            '--disable-gpu',
-            '--no-sandbox',
-            '--single-process',
-            '--no-zygote'
-          ],
-          executablePath: executablePath || '/usr/bin/google-chrome-stable',
-          headless: true,
-        }
-      });
+    this.client = new Client({
+      authStrategy: new LocalAuth({
+        clientId: 'default',
+        dataPath: '/tmp/whatsapp-session' // Diretório controlado pelo LocalAuth
+      }),
+      puppeteer: {
+        args: [
+          ...chromium.args,
+          '--disable-gpu',
+          '--no-sandbox',
+          '--single-process', 
+          '--no-zygote'
+        ],
+        executablePath: executablePath,
+        headless: chromium.headless
+      }
+    });
 
     this.client.on('qr', (qr) => {
       const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(
