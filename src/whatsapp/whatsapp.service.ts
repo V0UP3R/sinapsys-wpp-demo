@@ -1,10 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Client, LocalAuth } from 'whatsapp-web.js';
-import * as qrcode from 'qrcode-terminal';
 import { NlpManager } from 'node-nlp';
-import chromium from 'chrome-aws-lambda';
-import * as path from 'path';
 import * as fs from 'fs';
+import  {executablePath,defaultArgs}  from  'puppeteer-core'
+
 @Injectable()
 export class WhatsappService implements OnModuleInit {
   private client: Client;
@@ -13,6 +12,7 @@ export class WhatsappService implements OnModuleInit {
   private pendingConfirmations: Set<string> = new Set();
   private logger = new Logger(WhatsappService.name);
   private readonly modelPath = '/tmp/model.nlp'; // Caminho explícito
+  private readonly LOCAL_CHROME_EXECUTABLE  =  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
   constructor() {
     // Inicializa o NLP Manager para o idioma português
@@ -26,7 +26,7 @@ export class WhatsappService implements OnModuleInit {
   }
 
   async onModuleInit() {
-
+    const path = executablePath('chrome') || this.LOCAL_CHROME_EXECUTABLE
     if (!fs.existsSync('/tmp')) {
       fs.mkdirSync('/tmp');
     }
@@ -50,12 +50,9 @@ export class WhatsappService implements OnModuleInit {
         dataPath: '/tmp/whatsapp-session' // Diretório controlado pelo LocalAuth
       }),
       puppeteer: {
-        args: [
-          '--disable-gpu',
-          '--no-sandbox',
-          '--single-process', 
-          '--no-zygote'
-        ],
+        args: [...defaultArgs(), '--no-sandbox', '--disable-setuid-sandbox'],
+        executablePath:path,
+        headless: false,
         ignoreHTTPSErrors: true,
       }
     });
