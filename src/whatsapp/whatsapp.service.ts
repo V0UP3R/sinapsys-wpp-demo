@@ -19,7 +19,10 @@ export class WhatsappService implements OnModuleInit {
       puppeteer: {
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
       },
-      authStrategy: new LocalAuth(),
+      authStrategy: new LocalAuth({
+        clientId: 'default', // ou outro identificador que desejar
+        dataPath: '/tmp/whatsapp-session', // caminho para armazenar os dados da sessão
+      }),
     });
   }
 

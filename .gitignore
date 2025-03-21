@@ -4,7 +4,7 @@
 /build
 /.wwebjs_cache
 /.wwebjs_auth
-
+/.vscode
 # Logs
 logs
 *.log
