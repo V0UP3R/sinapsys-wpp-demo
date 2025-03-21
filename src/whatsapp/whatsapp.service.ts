@@ -14,10 +14,18 @@ export class WhatsappService implements OnModuleInit {
   constructor() {
     // Inicializa o NLP Manager para o idioma português
     this.nlpManager = new NlpManager({ languages: ['pt'] });
-    this.trainNlp();
   }
 
   async onModuleInit() {
+    // Tenta carregar o modelo a partir do caminho gravável (/tmp/model.nlp)
+    try {
+      await this.nlpManager.load('/tmp/model.nlp');
+      console.log('Modelo carregado a partir de /tmp/model.nlp');
+    } catch (error) {
+      console.log('Modelo não encontrado. Treinando o modelo...');
+      await this.trainNlp();
+    }
+
     // Obtém o caminho executável do Chromium provido pelo chrome-aws-lambda
     const executablePath = await chromium.executablePath;
 
@@ -36,9 +44,11 @@ export class WhatsappService implements OnModuleInit {
     });
 
     this.client.on('qr', (qr) => {
-      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(
+        qr,
+      )}&size=300x300`;
       console.log('Acesse o QR Code via o link:', qrCodeUrl);
-      // Também pode exibir o QR no terminal:
+      // Também exibe o QR no terminal:
       qrcode.generate(qr, { small: true });
     });
 
@@ -49,11 +59,11 @@ export class WhatsappService implements OnModuleInit {
     // Processa mensagens somente se o chat estiver aguardando confirmação
     this.client.on('message', async (message) => {
       console.log('Mensagem recebida:', message.body);
-      
+
       if (!this.pendingConfirmations.has(message.from)) {
         return;
       }
-      
+
       // Pré-processa o texto (normaliza: minúsculas, remove acentos, etc.)
       const normalizedText = this.normalizeText(message.body);
       const response = await this.nlpManager.process('pt', normalizedText);
@@ -83,31 +93,71 @@ export class WhatsappService implements OnModuleInit {
       .trim();
   }
 
-  // Treinamento robusto do NLP com muitos exemplos para confirmar ou cancelar
+  // Treinamento robusto do NLP com exemplos para confirmar ou cancelar
   private async trainNlp() {
     // Exemplos para intenção de confirmação
     const confirmExamples = [
-      "sim", "confirmo", "está ok", "ok", "certo", "claro", "afirmativo",
-      "estou de acordo", "com certeza", "acordo", "isso mesmo", "vou confirmar",
-      "confirmar atendimento", "tudo certo", "concordo", "confirmado",
-      "sim, pode confirmar", "por favor, confirme", "eu confirmo",
-      "afirma sim", "com certeza, confirma", "sem duvidas, confirmo",
-      "estou de acordo, pode prosseguir", "confirmado, prossiga", "Quero", "Desejo", "Desejo confirmar"
+      "sim",
+      "confirmo",
+      "está ok",
+      "ok",
+      "certo",
+      "claro",
+      "afirmativo",
+      "estou de acordo",
+      "com certeza",
+      "acordo",
+      "isso mesmo",
+      "vou confirmar",
+      "confirmar atendimento",
+      "tudo certo",
+      "concordo",
+      "confirmado",
+      "sim, pode confirmar",
+      "por favor, confirme",
+      "eu confirmo",
+      "afirma sim",
+      "com certeza, confirma",
+      "sem duvidas, confirmo",
+      "estou de acordo, pode prosseguir",
+      "confirmado, prossiga",
+      "Quero",
+      "Desejo",
+      "Desejo confirmar",
     ];
-    confirmExamples.forEach(example => {
+    confirmExamples.forEach((example) => {
       this.nlpManager.addDocument('pt', this.normalizeText(example), 'confirmar');
     });
 
     // Exemplos para intenção de cancelamento
     const cancelExamples = [
-      "não", "não quero", "cancela", "cancelado", "impossivel", "recuso",
-      "negativo", "não concordo", "não aceita", "não posso confirmar",
-      "não desejo", "cancela atendimento", "deixa pra la", "nem pensar",
-      "não vou", "cancelar", "não, cancele", "por favor, cancele",
-      "não quero confirmar", "cancelar o atendimento", "não, obrigado",
-      "não, recuso", "não, não concordo", "cancelado, por favor interrompa", "pare, não quero"
+      "não",
+      "não quero",
+      "cancela",
+      "cancelado",
+      "impossivel",
+      "recuso",
+      "negativo",
+      "não concordo",
+      "não aceita",
+      "não posso confirmar",
+      "não desejo",
+      "cancela atendimento",
+      "deixa pra la",
+      "nem pensar",
+      "não vou",
+      "cancelar",
+      "não, cancele",
+      "por favor, cancele",
+      "não quero confirmar",
+      "cancelar o atendimento",
+      "não, obrigado",
+      "não, recuso",
+      "não, não concordo",
+      "cancelado, por favor interrompa",
+      "pare, não quero",
     ];
-    cancelExamples.forEach(example => {
+    cancelExamples.forEach((example) => {
       this.nlpManager.addDocument('pt', this.normalizeText(example), 'cancelar');
     });
 
@@ -118,6 +168,7 @@ export class WhatsappService implements OnModuleInit {
     console.log('Treinando o modelo NLP...');
     await this.nlpManager.train();
 
+    // Salva o modelo no diretório gravável (/tmp)
     await this.nlpManager.save('/tmp/model.nlp');
     console.log('Treinamento concluído.');
   }
