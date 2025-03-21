@@ -6,8 +6,8 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "cross-env NODE_ENV=production mkdir -p /tmp/.wwebjs_auth/session && next build",
-    "vercel-build": "prisma generate && tsc",
+    "build": "cross-env NODE_ENV=production mkdir -p /tmp/.wwebjs_auth/session && nest build",
+    "vercel-build": "cross-env NODE_ENV=production mkdir -p /tmp/.wwebjs_auth/session && nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:debug": "nest start --debug --watch",
