@@ -1,8 +1,8 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+// src/whatsapp/whatsapp.service.ts
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Client, LocalAuth } from 'whatsapp-web.js';
+import * as qrcode from 'qrcode-terminal';
 import { NlpManager } from 'node-nlp';
-import * as fs from 'fs';
-import  {executablePath,defaultArgs}  from  'puppeteer-core'
 
 @Injectable()
 export class WhatsappService implements OnModuleInit {
@@ -10,72 +10,38 @@ export class WhatsappService implements OnModuleInit {
   private nlpManager: NlpManager;
   // Chats que aguardam confirmação
   private pendingConfirmations: Set<string> = new Set();
-  private logger = new Logger(WhatsappService.name);
-  private readonly modelPath = '/tmp/model.nlp'; // Caminho explícito
-  private readonly LOCAL_CHROME_EXECUTABLE  =  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
   constructor() {
     // Inicializa o NLP Manager para o idioma português
-    this.nlpManager = new NlpManager({ 
-      languages: ['pt'], 
-      autoSave: false,       // Desativa autosave
-      autoLoad: false,       // Desativa autoload
-      modelFileName: this.modelPath
+    this.nlpManager = new NlpManager({ languages: ['pt'] });
+    this.trainNlp();
+    // Inicializa o cliente do WhatsApp com autenticação local
+    this.client = new Client({
+      puppeteer: {
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      },
+      authStrategy: new LocalAuth(),
     });
-    // this.trainNlp();
   }
 
   async onModuleInit() {
-    const path = executablePath('chrome') || this.LOCAL_CHROME_EXECUTABLE
-    if (!fs.existsSync('/tmp')) {
-      fs.mkdirSync('/tmp');
-    }
-
-    try {
-      // Carrega usando o caminho explícito
-      if (fs.existsSync(this.modelPath)) {
-        await this.nlpManager.load(this.modelPath);
-      } else {
-        throw new Error('Modelo não encontrado');
-      }
-    } catch (error) {
-      await this.trainNlp();
-      await this.nlpManager.save(this.modelPath);
-    }
-
-    // Inicializa o cliente do WhatsApp com autenticação local e as configurações do chrome-aws-lambda
-    this.client = new Client({
-      authStrategy: new LocalAuth({
-        clientId: 'default',
-        dataPath: '/tmp/whatsapp-session' // Diretório controlado pelo LocalAuth
-      }),
-      puppeteer: {
-        args: [...defaultArgs(), '--no-sandbox', '--disable-setuid-sandbox'],
-        executablePath:path,
-        headless: false,
-        ignoreHTTPSErrors: true,
-      }
-    });
-
     this.client.on('qr', (qr) => {
-      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(
-        qr,
-      )}&size=300x300`;
-      this.logger.log('Acesse o QR Code via o link:', qrCodeUrl);
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
+      console.log('Acesse o QR Code via o link:', qrCodeUrl);
     });
 
     this.client.on('ready', () => {
-      this.logger.log('Cliente do WhatsApp pronto!');
+      console.log('Cliente do WhatsApp pronto!');
     });
 
     // Processa mensagens somente se o chat estiver aguardando confirmação
     this.client.on('message', async (message) => {
-      this.logger.log('Mensagem recebida:', message.body);
-
+      console.log('Mensagem recebida:', message.body);
+      
       if (!this.pendingConfirmations.has(message.from)) {
         return;
       }
-
+      
       // Pré-processa o texto (normaliza: minúsculas, remove acentos, etc.)
       const normalizedText = this.normalizeText(message.body);
       const response = await this.nlpManager.process('pt', normalizedText);
@@ -88,11 +54,10 @@ export class WhatsappService implements OnModuleInit {
         await this.client.sendMessage(message.from, 'Ação cancelada!');
         this.pendingConfirmations.delete(message.from);
       } else {
-        this.logger.error('Resposta não foi suficientemente clara. Nenhuma ação tomada.');
+        console.log('Resposta não foi suficientemente clara. Nenhuma ação tomada.');
       }
     });
 
-    // Inicializa o cliente do WhatsApp
     this.client.initialize();
   }
 
@@ -105,71 +70,31 @@ export class WhatsappService implements OnModuleInit {
       .trim();
   }
 
-  // Treinamento robusto do NLP com exemplos para confirmar ou cancelar
+  // Treinamento robusto do NLP com muitos exemplos para confirmar ou cancelar
   private async trainNlp() {
     // Exemplos para intenção de confirmação
     const confirmExamples = [
-      "sim",
-      "confirmo",
-      "está ok",
-      "ok",
-      "certo",
-      "claro",
-      "afirmativo",
-      "estou de acordo",
-      "com certeza",
-      "acordo",
-      "isso mesmo",
-      "vou confirmar",
-      "confirmar atendimento",
-      "tudo certo",
-      "concordo",
-      "confirmado",
-      "sim, pode confirmar",
-      "por favor, confirme",
-      "eu confirmo",
-      "afirma sim",
-      "com certeza, confirma",
-      "sem duvidas, confirmo",
-      "estou de acordo, pode prosseguir",
-      "confirmado, prossiga",
-      "Quero",
-      "Desejo",
-      "Desejo confirmar",
+      "sim", "confirmo", "está ok", "ok", "certo", "claro", "afirmativo",
+      "estou de acordo", "com certeza", "acordo", "isso mesmo", "vou confirmar",
+      "confirmar atendimento", "tudo certo", "concordo", "confirmado",
+      "sim, pode confirmar", "por favor, confirme", "eu confirmo",
+      "afirma sim", "com certeza, confirma", "sem duvidas, confirmo",
+      "estou de acordo, pode prosseguir", "confirmado, prossiga", "Quero", "Desejo", "Desejo confirmar"
     ];
-    confirmExamples.forEach((example) => {
+    confirmExamples.forEach(example => {
       this.nlpManager.addDocument('pt', this.normalizeText(example), 'confirmar');
     });
 
     // Exemplos para intenção de cancelamento
     const cancelExamples = [
-      "não",
-      "não quero",
-      "cancela",
-      "cancelado",
-      "impossivel",
-      "recuso",
-      "negativo",
-      "não concordo",
-      "não aceita",
-      "não posso confirmar",
-      "não desejo",
-      "cancela atendimento",
-      "deixa pra la",
-      "nem pensar",
-      "não vou",
-      "cancelar",
-      "não, cancele",
-      "por favor, cancele",
-      "não quero confirmar",
-      "cancelar o atendimento",
-      "não, obrigado",
-      "não, recuso",
-      "não, não concordo",
-      "cancelado, por favor interrompa",
-      "pare, não quero",
+      "não", "não quero", "cancela", "cancelado", "impossivel", "recuso",
+      "negativo", "não concordo", "não aceita", "não posso confirmar",
+      "não desejo", "cancela atendimento", "deixa pra la", "nem pensar",
+      "não vou", "cancelar", "não, cancele", "por favor, cancele",
+      "não quero confirmar", "cancelar o atendimento", "não, obrigado",
+      "não, recuso", "não, não concordo", "cancelado, por favor interrompa", "pare, não quero"
     ];
-    cancelExamples.forEach((example) => {
+    cancelExamples.forEach(example => {
       this.nlpManager.addDocument('pt', this.normalizeText(example), 'cancelar');
     });
 
@@ -177,12 +102,10 @@ export class WhatsappService implements OnModuleInit {
     this.nlpManager.addDocument('pt', 'não entendi', 'fallback');
     this.nlpManager.addDocument('pt', 'pode repetir', 'fallback');
 
-    this.logger.log('Treinando o modelo NLP...');
+    console.log('Treinando o modelo NLP...');
     await this.nlpManager.train();
-
-    // Salva o modelo no diretório gravável (/tmp)
-    await this.nlpManager.save(this.modelPath);
-    this.logger.log('Treinamento concluído.');
+    this.nlpManager.save();
+    console.log('Treinamento concluído.');
   }
 
   // Formata o número para o padrão do WhatsApp
@@ -193,7 +116,6 @@ export class WhatsappService implements OnModuleInit {
   // Envia uma mensagem via WhatsApp
   async sendMessage(to: string, message: string) {
     const formattedTo = this.formatNumber(to);
-    this.pendingConfirmations.add(formattedTo);
     return this.client.sendMessage(formattedTo, message);
   }
 
