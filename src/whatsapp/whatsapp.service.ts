@@ -43,9 +43,6 @@ export class WhatsappService implements OnModuleInit {
       await this.nlpManager.save(this.modelPath);
     }
 
-    // Obtém o caminho executável do Chromium provido pelo chrome-aws-lambda
-    const executablePath = await chromium.executablePath;
-
     // Inicializa o cliente do WhatsApp com autenticação local e as configurações do chrome-aws-lambda
     this.client = new Client({
       authStrategy: new LocalAuth({
@@ -54,14 +51,12 @@ export class WhatsappService implements OnModuleInit {
       }),
       puppeteer: {
         args: [
-          ...chromium.args,
           '--disable-gpu',
           '--no-sandbox',
           '--single-process', 
           '--no-zygote'
         ],
-        executablePath: executablePath,
-        headless: chromium.headless
+        ignoreHTTPSErrors: true,
       }
     });
 
@@ -70,8 +65,6 @@ export class WhatsappService implements OnModuleInit {
         qr,
       )}&size=300x300`;
       this.logger.log('Acesse o QR Code via o link:', qrCodeUrl);
-      // Também exibe o QR no terminal:
-      qrcode.generate(qr, { small: true });
     });
 
     this.client.on('ready', () => {
