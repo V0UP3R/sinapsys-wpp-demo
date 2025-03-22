@@ -28,7 +28,7 @@ export class WhatsappService implements OnModuleInit {
           '--disable-gpu'
         ],
         headless: true,
-        executablePath: process.env.NODE_ENV =='production' ? '/nix/store/chrome-linux/chrome' : undefined,
+        executablePath: process.env.NODE_ENV =='production' ? '/usr/bin/chromium-browser' : undefined,
       },
       authStrategy: new LocalAuth(),
     });
