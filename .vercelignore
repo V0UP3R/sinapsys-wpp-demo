@@ -1,0 +1,8 @@
+node_modules/*
+!node_modules/@sparticuz
+!node_modules/whatsapp-web.js
+!node_modules/puppeteer-core
+!node_modules/node-nlp
+test/
+docs/
+*.md
