@@ -5,6 +5,11 @@
 			"use": "@vercel/node"
 		}
 	],
+  "functions": {
+    "src/handler.ts": {
+      "runtime": "nodejs22.x"
+    }
+  },
 	"routes":[{
 		"src":"/(.*)",
 		"dest":"./src/main.ts",
