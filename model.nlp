@@ -3,11 +3,11 @@
     "languages": [
       "pt"
     ],
-    "modelFileName": "C:\\Users\\vini_\\Desktop\\Projetos\\sinapsys-wpp-demo\\model.nlp",
     "tag": "nlp",
     "threshold": 0.5,
     "autoLoad": true,
     "autoSave": true,
+    "modelFileName": "model.nlp",
     "executeActionsBeforeAnswers": false,
     "calculateSentiment": true
   },
@@ -38,6 +38,10 @@
             "intent": "confirmar",
             "domain": "default"
           },
+          "afirm,sim": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
           "confirm": {
             "intent": "confirmar",
             "domain": "default"
@@ -46,7 +50,15 @@
             "intent": "confirmar",
             "domain": "default"
           },
+          "certez,com,confirm": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
           "ok": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "confirm,duv,sem": {
             "intent": "confirmar",
             "domain": "default"
           },
@@ -58,11 +70,19 @@
             "intent": "confirmar",
             "domain": "default"
           },
+          "acord,de,estou,pod,prossegu": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
           "afirm": {
             "intent": "confirmar",
             "domain": "default"
           },
           "acord,de,estou": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "confirm,prossig": {
             "intent": "confirmar",
             "domain": "default"
           },
@@ -74,7 +94,15 @@
             "intent": "confirmar",
             "domain": "default"
           },
+          "quer": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
           "isso,mesm": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
+          "desej": {
             "intent": "confirmar",
             "domain": "default"
           },
@@ -86,6 +114,10 @@
             "intent": "confirmar",
             "domain": "default"
           },
+          "confirm,desej": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
           "cert,tud": {
             "intent": "confirmar",
             "domain": "default"
@@ -94,60 +126,28 @@
             "intent": "confirmar",
             "domain": "default"
           },
-          "confirm,pod,sim": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
-          "confirm,favor,por": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
-          "confirm,eu": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
-          "afirm,sim": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
-          "certez,com,confirm": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
-          "confirm,duv,sem": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
-          "acord,de,estou,pod,prossegu": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
-          "confirm,prossig": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
-          "quer": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
-          "desej": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
-          "confirm,desej": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
           "nao": {
             "intent": "cancelar",
+            "domain": "default"
+          },
+          "confirm,pod,sim": {
+            "intent": "confirmar",
             "domain": "default"
           },
           "nao,quer": {
             "intent": "cancelar",
             "domain": "default"
           },
+          "confirm,favor,por": {
+            "intent": "confirmar",
+            "domain": "default"
+          },
           "cancel": {
             "intent": "cancelar",
+            "domain": "default"
+          },
+          "confirm,eu": {
+            "intent": "confirmar",
             "domain": "default"
           },
           "impossivel": {
@@ -225,11 +225,20 @@
           "nao,par,quer": {
             "intent": "cancelar",
             "domain": "default"
+          },
+          "entend,nao": {
+            "intent": "fallback",
+            "domain": "default"
+          },
+          "pod,repet": {
+            "intent": "fallback",
+            "domain": "default"
           }
         },
         "intentDict": {
           "confirmar": "default",
-          "cancelar": "default"
+          "cancelar": "default",
+          "fallback": "default"
         },
         "sentences": [
           {
@@ -491,6 +500,286 @@
             "domain": "default",
             "utterance": "pare, nao quero",
             "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "não entendi",
+            "intent": "fallback"
+          },
+          {
+            "domain": "default",
+            "utterance": "pode repetir",
+            "intent": "fallback"
+          },
+          {
+            "domain": "default",
+            "utterance": "sim",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "confirmo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "esta ok",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "ok",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "certo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "claro",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "afirmativo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "estou de acordo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "com certeza",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "acordo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "isso mesmo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "vou confirmar",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "confirmar atendimento",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "tudo certo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "concordo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "confirmado",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "sim, pode confirmar",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "por favor, confirme",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "eu confirmo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "afirma sim",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "com certeza, confirma",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "sem duvidas, confirmo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "estou de acordo, pode prosseguir",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "confirmado, prossiga",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "quero",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "desejo",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "desejo confirmar",
+            "intent": "confirmar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao quero",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "cancela",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "cancelado",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "impossivel",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "recuso",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "negativo",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao concordo",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao aceita",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao posso confirmar",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao desejo",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "cancela atendimento",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "deixa pra la",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nem pensar",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao vou",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "cancelar",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao, cancele",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "por favor, cancele",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao quero confirmar",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "cancelar o atendimento",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao, obrigado",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao, recuso",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "nao, nao concordo",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "cancelado, por favor interrompa",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "pare, nao quero",
+            "intent": "cancelar"
+          },
+          {
+            "domain": "default",
+            "utterance": "não entendi",
+            "intent": "fallback"
+          },
+          {
+            "domain": "default",
+            "utterance": "pode repetir",
+            "intent": "fallback"
           }
         ],
         "domains": {
@@ -550,11 +839,14 @@
               "o": 1,
               "obrig": 1,
               "interromp": 1,
-              "par": 1
+              "par": 1,
+              "entend": 1,
+              "repet": 1
             },
             "intents": {
               "confirmar": 1,
-              "cancelar": 1
+              "cancelar": 1,
+              "fallback": 1
             },
             "intentFeatures": {
               "confirmar": {
@@ -612,6 +904,12 @@
                 "obrig": 1,
                 "interromp": 1,
                 "par": 1
+              },
+              "fallback": {
+                "nao": 1,
+                "entend": 1,
+                "pod": 1,
+                "repet": 1
               }
             },
             "featuresToIntent": {
@@ -674,7 +972,8 @@
                 "cancelar"
               ],
               "pod": [
-                "confirmar"
+                "confirmar",
+                "fallback"
               ],
               "por": [
                 "confirmar",
@@ -708,7 +1007,8 @@
                 "cancelar"
               ],
               "nao": [
-                "cancelar"
+                "cancelar",
+                "fallback"
               ],
               "cancel": [
                 "cancelar"
@@ -754,6 +1054,12 @@
               ],
               "par": [
                 "cancelar"
+              ],
+              "entend": [
+                "fallback"
+              ],
+              "repet": [
+                "fallback"
               ]
             },
             "neuralNetwork": {
@@ -812,106 +1118,162 @@
                 "o",
                 "obrig",
                 "interromp",
-                "par"
+                "par",
+                "entend",
+                "repet"
               ],
               "intents": [
                 "confirmar",
-                "cancelar"
+                "cancelar",
+                "fallback"
               ],
               "perceptrons": [
                 [
-                  0.670824408531189,
-                  0.6079529523849487,
-                  -0.07363752275705338,
-                  0.9946596026420593,
-                  0.9966444373130798,
-                  0.9927113056182861,
-                  0.5951571464538574,
-                  -0.04381242021918297,
-                  -0.04381242021918297,
-                  0.9750863313674927,
-                  0.30208784341812134,
-                  0.30208784341812134,
-                  0.4712916314601898,
-                  0.4712916314601898,
-                  0.3225894272327423,
-                  0.2876541316509247,
-                  -0.08562663197517395,
-                  0.9754436612129211,
-                  -0.45105186104774475,
-                  0.13565072417259216,
-                  0.13565072417259216,
-                  0.28883489966392517,
-                  0.15550431609153748,
-                  0.15550431609153748,
-                  0.5205931067466736,
-                  0.3286523222923279,
-                  0.9914625883102417,
-                  0.6347427368164062,
-                  -16.449636459350586,
-                  -13.603938102722168,
-                  -13.290873527526855,
-                  -13.288803100585938,
-                  -13.286726951599121,
-                  -0.46876341104507446,
-                  -2.3367862701416016,
-                  -4.442333221435547,
-                  -4.442333221435547,
-                  -4.442333221435547,
-                  -6.65793514251709,
-                  -6.65793514251709,
-                  -0.3332252502441406,
+                  0.715997576713562,
+                  0.6269919872283936,
+                  -0.060921262949705124,
+                  0.9490834474563599,
+                  0.9511892795562744,
+                  0.9483307003974915,
+                  0.5283060669898987,
+                  -0.04141775518655777,
+                  -0.04141775518655777,
+                  0.9250026941299438,
+                  0.27521923184394836,
+                  0.27521923184394836,
+                  0.4492035210132599,
+                  0.4492035210132599,
+                  0.25933387875556946,
+                  0.22630907595157623,
+                  -0.07899776846170425,
+                  0.9255168437957764,
+                  -0.6576066017150879,
+                  0.10416556894779205,
+                  0.10416556894779205,
+                  0.2177126109600067,
+                  0.12373049557209015,
+                  0.12373049557209015,
+                  0.738332211971283,
+                  0.26271340250968933,
+                  0.9423581957817078,
+                  0.5799813866615295,
+                  -16.85247230529785,
+                  -13.583135604858398,
+                  -13.340238571166992,
+                  -13.338295936584473,
+                  -13.336347579956055,
+                  -0.46442410349845886,
+                  -2.3957362174987793,
+                  -4.456464767456055,
+                  -4.456464767456055,
+                  -4.456464767456055,
+                  -6.6800079345703125,
+                  -6.6800079345703125,
+                  -0.3303235173225403,
                   -0.01840616576373577,
-                  -0.3007674813270569,
+                  -0.27346643805503845,
                   0,
-                  13.341758983948276
+                  0,
+                  -12.641440391540527,
+                  13.378010710384387
                 ],
                 [
-                  -4.198249340057373,
-                  -2.78631591796875,
-                  -1.5059493780136108,
-                  -4.194846153259277,
-                  -4.154709339141846,
-                  -4.108408451080322,
-                  -4.104561805725098,
-                  -1.0797251462936401,
-                  -1.0797251462936401,
-                  -4.105676651000977,
-                  -2.11834454536438,
-                  -2.11834454536438,
-                  -2.101961374282837,
-                  -2.101961374282837,
-                  0.5850090384483337,
-                  0.7516133785247803,
-                  -0.9825893044471741,
-                  0.30746081471443176,
-                  -0.3377101421356201,
-                  0.4751436710357666,
-                  0.4751436710357666,
-                  -0.3411750793457031,
-                  -0.17539386451244354,
-                  -0.17539386451244354,
-                  -0.13930059969425201,
-                  -0.2982397675514221,
-                  1.4079642295837402,
-                  -0.5263051986694336,
-                  9.26512336730957,
-                  9.19298267364502,
-                  11.368317604064941,
-                  6.467996597290039,
-                  11.217435836791992,
-                  1.7008198499679565,
-                  4.524709224700928,
-                  3.6921346187591553,
-                  3.6921346187591553,
-                  3.6921346187591553,
-                  5.537088871002197,
-                  5.537088871002197,
-                  1.1314338445663452,
-                  1.6574816703796387,
-                  1.0721834897994995,
-                  0.5712783336639404,
-                  3.0719343485896675
+                  -3.777505874633789,
+                  -2.793332815170288,
+                  -1.3627517223358154,
+                  -3.7856757640838623,
+                  -3.737426519393921,
+                  -3.6863279342651367,
+                  -3.6816489696502686,
+                  -0.9904327392578125,
+                  -0.9904327392578125,
+                  -3.685094118118286,
+                  -1.922450065612793,
+                  -1.922450065612793,
+                  -1.9006162881851196,
+                  -1.9006162881851196,
+                  0.5522096157073975,
+                  0.7362222075462341,
+                  -0.8793569803237915,
+                  0.3196984827518463,
+                  -2.252229690551758,
+                  0.4827078878879547,
+                  0.4827078878879547,
+                  -0.34074854850769043,
+                  -0.1798892468214035,
+                  -0.1798892468214035,
+                  -0.0530087910592556,
+                  -0.275159627199173,
+                  1.4462145566940308,
+                  -0.5236815810203552,
+                  9.215023040771484,
+                  9.144463539123535,
+                  11.366131782531738,
+                  6.453449726104736,
+                  11.195150375366211,
+                  1.6855546236038208,
+                  4.516092300415039,
+                  3.676933526992798,
+                  3.676933526992798,
+                  3.676933526992798,
+                  5.514923095703125,
+                  5.514923095703125,
+                  1.1494423151016235,
+                  1.6479787826538086,
+                  1.0802240371704102,
+                  0.5652012228965759,
+                  -12.574914932250977,
+                  -1.9638772010803223,
+                  3.096338033916044
+                ],
+                [
+                  -2.5944979190826416,
+                  -2.8771650791168213,
+                  -0.22829724848270416,
+                  -0.546449601650238,
+                  -0.5145929455757141,
+                  -0.4637068510055542,
+                  -0.46392756700515747,
+                  -1.3586665391921997,
+                  -1.3586665391921997,
+                  -1.5013012886047363,
+                  -0.28103694319725037,
+                  -0.28103694319725037,
+                  -0.27465081214904785,
+                  -0.27465081214904785,
+                  -1.1029953956604004,
+                  -0.07108098268508911,
+                  -0.1579919457435608,
+                  -1.2166624069213867,
+                  5.3175506591796875,
+                  -0.0208318829536438,
+                  -0.0208318829536438,
+                  -0.010492411442101002,
+                  -0.005923619028180838,
+                  -0.005923619028180838,
+                  -1.262142300605774,
+                  -0.0004001430352218449,
+                  -1.2221242189407349,
+                  -1.138757348060608,
+                  -0.07100342959165573,
+                  -1.0812585353851318,
+                  -0.3383203148841858,
+                  -1.0240105390548706,
+                  -0.3353673219680786,
+                  -1.159214735031128,
+                  -0.1320444643497467,
+                  -0.11827018857002258,
+                  -0.11827018857002258,
+                  -0.11827018857002258,
+                  -0.17392000555992126,
+                  -0.17392000555992126,
+                  -0.0012007388286292553,
+                  -1.0454225540161133,
+                  -0.0007226092275232077,
+                  -0.09542437642812729,
+                  14.285700798034668,
+                  8.897151947021484,
+                  0.07101059639626012
                 ]
               ]
             }
@@ -1128,6 +1490,230 @@
       [
         "pt",
         "pare, nao quero"
+      ],
+      [
+        "pt",
+        "não entendi"
+      ],
+      [
+        "pt",
+        "pode repetir"
+      ],
+      [
+        "pt",
+        "sim"
+      ],
+      [
+        "pt",
+        "confirmo"
+      ],
+      [
+        "pt",
+        "esta ok"
+      ],
+      [
+        "pt",
+        "ok"
+      ],
+      [
+        "pt",
+        "certo"
+      ],
+      [
+        "pt",
+        "claro"
+      ],
+      [
+        "pt",
+        "afirmativo"
+      ],
+      [
+        "pt",
+        "estou de acordo"
+      ],
+      [
+        "pt",
+        "com certeza"
+      ],
+      [
+        "pt",
+        "acordo"
+      ],
+      [
+        "pt",
+        "isso mesmo"
+      ],
+      [
+        "pt",
+        "vou confirmar"
+      ],
+      [
+        "pt",
+        "confirmar atendimento"
+      ],
+      [
+        "pt",
+        "tudo certo"
+      ],
+      [
+        "pt",
+        "concordo"
+      ],
+      [
+        "pt",
+        "confirmado"
+      ],
+      [
+        "pt",
+        "sim, pode confirmar"
+      ],
+      [
+        "pt",
+        "por favor, confirme"
+      ],
+      [
+        "pt",
+        "eu confirmo"
+      ],
+      [
+        "pt",
+        "afirma sim"
+      ],
+      [
+        "pt",
+        "com certeza, confirma"
+      ],
+      [
+        "pt",
+        "sem duvidas, confirmo"
+      ],
+      [
+        "pt",
+        "estou de acordo, pode prosseguir"
+      ],
+      [
+        "pt",
+        "confirmado, prossiga"
+      ],
+      [
+        "pt",
+        "quero"
+      ],
+      [
+        "pt",
+        "desejo"
+      ],
+      [
+        "pt",
+        "desejo confirmar"
+      ],
+      [
+        "pt",
+        "nao"
+      ],
+      [
+        "pt",
+        "nao quero"
+      ],
+      [
+        "pt",
+        "cancela"
+      ],
+      [
+        "pt",
+        "cancelado"
+      ],
+      [
+        "pt",
+        "impossivel"
+      ],
+      [
+        "pt",
+        "recuso"
+      ],
+      [
+        "pt",
+        "negativo"
+      ],
+      [
+        "pt",
+        "nao concordo"
+      ],
+      [
+        "pt",
+        "nao aceita"
+      ],
+      [
+        "pt",
+        "nao posso confirmar"
+      ],
+      [
+        "pt",
+        "nao desejo"
+      ],
+      [
+        "pt",
+        "cancela atendimento"
+      ],
+      [
+        "pt",
+        "deixa pra la"
+      ],
+      [
+        "pt",
+        "nem pensar"
+      ],
+      [
+        "pt",
+        "nao vou"
+      ],
+      [
+        "pt",
+        "cancelar"
+      ],
+      [
+        "pt",
+        "nao, cancele"
+      ],
+      [
+        "pt",
+        "por favor, cancele"
+      ],
+      [
+        "pt",
+        "nao quero confirmar"
+      ],
+      [
+        "pt",
+        "cancelar o atendimento"
+      ],
+      [
+        "pt",
+        "nao, obrigado"
+      ],
+      [
+        "pt",
+        "nao, recuso"
+      ],
+      [
+        "pt",
+        "nao, nao concordo"
+      ],
+      [
+        "pt",
+        "cancelado, por favor interrompa"
+      ],
+      [
+        "pt",
+        "pare, nao quero"
+      ],
+      [
+        "pt",
+        "não entendi"
+      ],
+      [
+        "pt",
+        "pode repetir"
       ]
     ]
   },
