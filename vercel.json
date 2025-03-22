@@ -6,12 +6,6 @@
       "use": "@vercel/node"
     }
   ],
-  "config": {
-    "includeFiles": [
-      "tmp/**",
-      "model.nlp"
-    ]
-  },
   "routes": [
     {
       "src": "/(.*)",
@@ -28,5 +22,8 @@
         "TRACE"
       ]
     }
+  ],
+  "rewrites": [
+    { "source": "/(.*)", "destination": "src/main.ts" }
   ]
 }
