@@ -1,4 +1,5 @@
 {
+  "version":2,
   "builds": [
     {
 			"src": "src/main.ts",
@@ -8,12 +9,6 @@
           "dist/**",
           "tmp/**",
           "model.nlp"
-        ],
-				"exclude": [
-          "**/node_modules/@sparticuz/chromium/aws/**",
-          "**/node_modules/@sparticuz/chromium/bin/**",
-          "**/node_modules/puppeteer/**",
-          "**/node_modules/whatsapp-web.js/src/**"
         ]
       }
     }
