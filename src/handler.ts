@@ -3,7 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import * as serverless from 'serverless-http';
 import { ExpressAdapter } from '@nestjs/platform-express';
 import * as express from 'express';
-import { AppModule } from './src/app.module';
+import { AppModule } from './app.module';
 
 const expressApp = express();
 let cachedHandler: any = null;
