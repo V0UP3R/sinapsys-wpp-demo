@@ -20,7 +20,7 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "start:dev": "cross-env NODE_ENV=development nest start --watch",
-    "start:prod": "cross-env NODE_ENV=production node dist/handler"
+    "start:prod": "cross-env NODE_ENV=production node dist/main"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
@@ -31,7 +31,6 @@
     "@nestjs/platform-express": "^10.0.0",
     "@sparticuz/chromium": "^133.0.0",
     "@vercel/node": "^4.0.0",
-    "express": "^4.21.2",
     "node-nlp": "^5.0.0-alpha.5",
     "passport-jwt": "^4.0.1",
     "puppeteer-core": "^24.4.0",
