@@ -4,7 +4,7 @@ import { Client, LocalAuth } from 'whatsapp-web.js';
 import { NlpManager } from 'node-nlp';
 import * as puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
-import path from 'path';
+import * as path from 'path';
 import { existsSync, mkdirSync } from 'fs';
 
 @Injectable()
