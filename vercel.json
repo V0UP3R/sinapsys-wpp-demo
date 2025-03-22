@@ -5,7 +5,7 @@
 			"use": "@vercel/node"
 		}
 	],
-  "api/handler.js": {
+  "src/handler.ts": {
     "runtime": "nodejs22.x"
   },
 	"routes":[{
