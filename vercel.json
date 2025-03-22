@@ -1,13 +1,13 @@
 {
 	"builds":[
 		{
-			"src": "src/main.ts",
+			"src": "./src/main.ts",
 			"use": "@vercel/node"
 		}
 	],
 	"routes":[{
 		"src":"/(.*)",
-		"dest":"src/main.ts",
+		"dest":"./src/main.ts",
 		"methods":[
 			"GET",
 			"POST",
@@ -18,6 +18,6 @@
 		]
 	}],
   "rewrites": [
-    { "source": "/(.*)", "destination": "/src/handler.ts" }
+    { "source": "/(.*)", "destination": "./src/handler.ts" }
   ]
 }
