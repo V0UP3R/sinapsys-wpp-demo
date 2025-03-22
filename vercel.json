@@ -2,28 +2,11 @@
   "version": 2,
   "builds": [
     {
-      "src": "src/main.ts",
+      "src": "src/vercel-handler.ts",
       "use": "@vercel/node"
     }
   ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "src/main.ts",
-      "methods": [
-        "GET",
-        "POST",
-        "PUT",
-        "PATCH",
-        "OPTIONS",
-        "DELETE",
-        "HEAD",
-        "CONNECT",
-        "TRACE"
-      ]
-    }
-  ],
   "rewrites": [
-    { "source": "/(.*)", "destination": "src/main.ts" }
+    { "source": "/(.*)", "destination": "src/vercel-handler.ts" }
   ]
 }
