@@ -23,6 +23,7 @@ export class WhatsappService implements OnModuleInit {
   private async initializeClient() {
     const chrome = chromium
     const browserPath = await chrome.executablePath;
+    const dataPath = '../whatsapp-session'
 
     this.client = new Client({
       puppeteer: {
@@ -35,7 +36,7 @@ export class WhatsappService implements OnModuleInit {
         headless: true,
         executablePath: browserPath, // Caminho do Chromium embutido
       },
-      authStrategy: new LocalAuth({dataPath:'/tmp'}),
+      authStrategy: new LocalAuth({dataPath}),
     });
   }
 
