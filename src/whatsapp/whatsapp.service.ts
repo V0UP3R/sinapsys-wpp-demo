@@ -31,7 +31,7 @@ export class WhatsappService implements OnModuleInit {
           '--disable-dev-shm-usage',
           '--single-process'
         ],
-        headless: "chrome",
+        headless: true,
         executablePath: browserPath, // Caminho do Chromium embutido
       },
       authStrategy: new LocalAuth(),
