@@ -9,7 +9,7 @@ export class KeepAliveService {
 
   constructor(private readonly httpService: HttpService) {}
 
-  @Cron('*/10 * * * * *') // Executa a cada 10 segundos
+  @Cron('*/60 * * * * *') // Executa a cada 10 segundos
   async keepServerAlive() {
     try {
       const url = 'http://localhost:3000/'; // Ajuste a URL se necessário
