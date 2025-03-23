@@ -12,7 +12,7 @@ export class KeepAliveService {
   @Cron('*/10 * * * * *') // Executa a cada 10 segundos
   async keepServerAlive() {
     try {
-      const url = 'http://localhost:3000/health'; // Ajuste a URL se necessário
+      const url = 'http://localhost:3000/'; // Ajuste a URL se necessário
       await lastValueFrom(this.httpService.get(url));
       this.logger.log(`Keep-alive request sent to ${url}`);
     } catch (error) {
