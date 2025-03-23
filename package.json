@@ -23,12 +23,14 @@
     "start:prod": "cross-env NODE_ENV=production node dist/main"
   },
   "dependencies": {
+    "@nestjs/axios": "^4.0.0",
     "@nestjs/common": "^10.0.0",
     "@nestjs/core": "^10.0.0",
     "@nestjs/jwt": "^11.0.0",
     "@nestjs/mapped-types": "*",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^10.4.15",
+    "@nestjs/schedule": "^5.0.1",
     "@sparticuz/chromium": "^133.0.0",
     "@vercel/node": "^4.0.0",
     "chrome-aws-lambda": "^10.1.0",
