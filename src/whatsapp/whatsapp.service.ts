@@ -133,7 +133,12 @@ export class WhatsappService implements OnModuleInit {
   async sendMessage(to: string, message: string) {
     const formattedTo = this.formatNumber(to);
     this.pendingConfirmations.add(formattedTo);
-    return this.client.sendMessage(formattedTo, message);
+    try {
+      return await this.client.sendMessage(formattedTo, message);
+    } catch (error) {
+      console.error('Erro ao enviar mensagem:', error);
+      // Aqui você pode tentar reinicializar a conexão ou notificar sobre o problema
+    }
   }
 
   // Envia uma solicitação de confirmação e registra o chat
