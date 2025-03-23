@@ -29,9 +29,12 @@ export class WhatsappService implements OnModuleInit {
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
-          '--single-process'
+          '--single-process',
+          '--no-sandbox',
+          '--disable-gpu',
+          '--remote-debugging-port=9222',
         ],
-        headless: false,
+        headless: true,
         executablePath: chrome, // Caminho do Chromium embutido
       },
       authStrategy: new LocalAuth({dataPath}),
