@@ -2,6 +2,7 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode-terminal';
 import { NlpManager } from 'node-nlp';
+import chromium from 'chrome-aws-lambda';
 
 @Injectable()
 export class WhatsappService implements OnModuleInit {
@@ -15,20 +16,23 @@ export class WhatsappService implements OnModuleInit {
     this.nlpManager = new NlpManager({ languages: ['pt'] });
     this.trainNlp();
     // Inicializa o cliente do WhatsApp com autenticação local
+    this.initializeClient();
+  }
+
+  private async initializeClient() {
+    const chrome = chromium
+    const browserPath = await chrome.executablePath;
+
     this.client = new Client({
       puppeteer: {
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage', // Adicione este
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
-          '--no-zygote',
-          '--single-process', // Para ambientes com poucos recursos
-          '--disable-gpu'
+          '--disable-dev-shm-usage',
+          '--single-process'
         ],
-        headless: true,
-        executablePath: process.env.NODE_ENV =='production' ? '/usr/bin/chromium-browser' : undefined,
+        headless: "chrome",
+        executablePath: browserPath, // Caminho do Chromium embutido
       },
       authStrategy: new LocalAuth(),
     });
@@ -39,7 +43,7 @@ export class WhatsappService implements OnModuleInit {
     await this.trainNlp();
   
     this.client.on('qr', (qr) => {
-      qrcode.generate(qr, { small: true });
+      // qrcode.generate(qr, { small: true });
       const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
       console.log('Acesse o QR Code via o link:', qrCodeUrl);
     });
