@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode-terminal';
 import { NlpManager } from 'node-nlp';
@@ -10,6 +10,7 @@ export class WhatsappService implements OnModuleInit {
   private nlpManager: NlpManager;
   // Chats que aguardam confirmação
   private pendingConfirmations: Set<string> = new Set();
+  private readonly logger = new Logger(WhatsappService.name);
 
   constructor() {
     // Inicializa o NLP Manager para o idioma português
@@ -34,7 +35,7 @@ export class WhatsappService implements OnModuleInit {
         headless: true,
         executablePath: browserPath, // Caminho do Chromium embutido
       },
-      authStrategy: new LocalAuth(),
+      authStrategy: new LocalAuth({dataPath:'/tmp'}),
     });
   }
 
@@ -42,24 +43,24 @@ export class WhatsappService implements OnModuleInit {
     this.client.on('qr', (qr) => {
       // qrcode.generate(qr, { small: true });
       const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
-      console.log('Acesse o QR Code via o link:', qrCodeUrl);
+      this.logger.log('Acesse o QR Code via o link:', qrCodeUrl);
     });
   
     this.client.on('ready', () => {
-      console.log('Cliente do WhatsApp pronto!');
+      this.logger.log('Cliente do WhatsApp pronto!');
     });
 
     this.client.on('auth_failure', (msg) => {
-      console.error('Falha na autenticação:', msg);
+      this.logger.error('Falha na autenticação:', msg);
     });
     
     this.client.on('disconnected', (reason) => {
-      console.warn('Cliente desconectado:', reason);
+      this.logger.warn('Cliente desconectado:', reason);
     });
   
     // Processa mensagens somente se o chat estiver aguardando confirmação
     this.client.on('message', async (message) => {
-      console.log('Mensagem recebida:', message.body);
+      this.logger.log('Mensagem recebida:', message.body);
       
       if (!this.pendingConfirmations.has(message.from)) {
         return;
@@ -75,7 +76,7 @@ export class WhatsappService implements OnModuleInit {
         await this.client.sendMessage(message.from, 'Ação cancelada!');
         this.pendingConfirmations.delete(message.from);
       } else {
-        console.log('Resposta não foi suficientemente clara. Nenhuma ação tomada.');
+        this.logger.log('Resposta não foi suficientemente clara. Nenhuma ação tomada.');
       }
     });
   
@@ -123,10 +124,10 @@ export class WhatsappService implements OnModuleInit {
     this.nlpManager.addDocument('pt', 'não entendi', 'fallback');
     this.nlpManager.addDocument('pt', 'pode repetir', 'fallback');
 
-    console.log('Treinando o modelo NLP...');
+    this.logger.log('Treinando o modelo NLP...');
     await this.nlpManager.train();
     this.nlpManager.save();
-    console.log('Treinamento concluído.');
+    this.logger.log('Treinamento concluído.');
   }
 
   // Formata o número para o padrão do WhatsApp
@@ -141,10 +142,10 @@ export class WhatsappService implements OnModuleInit {
     try {
       return await this.client.sendMessage(formattedTo, message);
     } catch (error) {
-      console.error('Erro ao enviar mensagem:', error);
+      this.logger.error('Erro ao enviar mensagem:', error);
       // Se o erro indicar que a sessão foi fechada, reinicialize o cliente
       if (error.message.includes('Session closed')) {
-        console.warn('Tentando reinicializar o cliente...');
+        this.logger.warn('Tentando reinicializar o cliente...');
         this.initializeClient();
         this.client.initialize();
       }
