@@ -38,10 +38,7 @@ export class WhatsappService implements OnModuleInit {
     });
   }
 
-  async onModuleInit() {
-    // Aguarda o treinamento do NLP
-    await this.trainNlp();
-  
+  async onModuleInit() {  
     this.client.on('qr', (qr) => {
       // qrcode.generate(qr, { small: true });
       const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
@@ -50,6 +47,14 @@ export class WhatsappService implements OnModuleInit {
   
     this.client.on('ready', () => {
       console.log('Cliente do WhatsApp pronto!');
+    });
+
+    this.client.on('auth_failure', (msg) => {
+      console.error('Falha na autenticação:', msg);
+    });
+    
+    this.client.on('disconnected', (reason) => {
+      console.warn('Cliente desconectado:', reason);
     });
   
     // Processa mensagens somente se o chat estiver aguardando confirmação
@@ -137,7 +142,12 @@ export class WhatsappService implements OnModuleInit {
       return await this.client.sendMessage(formattedTo, message);
     } catch (error) {
       console.error('Erro ao enviar mensagem:', error);
-      // Aqui você pode tentar reinicializar a conexão ou notificar sobre o problema
+      // Se o erro indicar que a sessão foi fechada, reinicialize o cliente
+      if (error.message.includes('Session closed')) {
+        console.warn('Tentando reinicializar o cliente...');
+        this.initializeClient();
+        this.client.initialize();
+      }
     }
   }
 
