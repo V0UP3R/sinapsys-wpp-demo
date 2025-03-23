@@ -46,11 +46,11 @@
             "intent": "confirmar",
             "domain": "default"
           },
-          "esta,ok": {
+          "certez,com,confirm": {
             "intent": "confirmar",
             "domain": "default"
           },
-          "certez,com,confirm": {
+          "esta,ok": {
             "intent": "confirmar",
             "domain": "default"
           },
@@ -90,11 +90,11 @@
             "intent": "confirmar",
             "domain": "default"
           },
-          "acord": {
+          "quer": {
             "intent": "confirmar",
             "domain": "default"
           },
-          "quer": {
+          "acord": {
             "intent": "confirmar",
             "domain": "default"
           },
@@ -130,12 +130,12 @@
             "intent": "cancelar",
             "domain": "default"
           },
-          "confirm,pod,sim": {
-            "intent": "confirmar",
-            "domain": "default"
-          },
           "nao,quer": {
             "intent": "cancelar",
+            "domain": "default"
+          },
+          "confirm,pod,sim": {
+            "intent": "confirmar",
             "domain": "default"
           },
           "confirm,favor,por": {
@@ -796,8 +796,8 @@
               "log": true
             },
             "features": {
-              "sim": 1,
               "confirm": 1,
+              "sim": 1,
               "esta": 1,
               "ok": 1,
               "cert": 1,
@@ -850,8 +850,8 @@
             },
             "intentFeatures": {
               "confirmar": {
-                "sim": 1,
                 "confirm": 1,
+                "sim": 1,
                 "esta": 1,
                 "ok": 1,
                 "cert": 1,
@@ -913,12 +913,12 @@
               }
             },
             "featuresToIntent": {
-              "sim": [
-                "confirmar"
-              ],
               "confirm": [
                 "confirmar",
                 "cancelar"
+              ],
+              "sim": [
+                "confirmar"
               ],
               "esta": [
                 "confirmar"
