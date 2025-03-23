@@ -33,7 +33,6 @@
     "@nestjs/schedule": "^5.0.1",
     "@sparticuz/chromium": "^133.0.0",
     "@vercel/node": "^5.1.14",
-    "chrome-aws-lambda": "^10.1.0",
     "node-nlp": "^5.0.0-alpha.5",
     "passport-jwt": "^4.0.1",
     "puppeteer": "^24.4.0",

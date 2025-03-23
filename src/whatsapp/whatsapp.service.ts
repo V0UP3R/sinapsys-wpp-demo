@@ -2,8 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode-terminal';
 import { NlpManager } from 'node-nlp';
-import chromium from 'chrome-aws-lambda';
-
+import puppeteer from 'puppeteer';
 @Injectable()
 export class WhatsappService implements OnModuleInit {
   private client: Client;
@@ -21,8 +20,7 @@ export class WhatsappService implements OnModuleInit {
   }
 
   private async initializeClient() {
-    const chrome = chromium
-    const browserPath = await chrome.executablePath;
+    const chrome = puppeteer.executablePath()
     const dataPath = '../whatsapp-session'
 
     this.client = new Client({
@@ -34,7 +32,7 @@ export class WhatsappService implements OnModuleInit {
           '--single-process'
         ],
         headless: false,
-        executablePath: browserPath, // Caminho do Chromium embutido
+        executablePath: chrome, // Caminho do Chromium embutido
       },
       authStrategy: new LocalAuth({dataPath}),
     });
