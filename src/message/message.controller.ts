@@ -10,9 +10,9 @@ export class MessageController {
   // @UseGuards(JwtAuthGuard)
   @Post('send')
   async sendMessage(
-    @Body() body: { to: string; message: string },
+    @Body() body: { to: string; message: string; appointmentId: string},
   ) {
-    await this.whatsappService.requestConfirmation(body.to, body.message);
+    await this.whatsappService.sendMessage(body.to, body.message,+body.appointmentId);
     return { status: 'Mensagem enviada!' };
   }
 }
