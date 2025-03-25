@@ -3,6 +3,9 @@
 /node_modules
 /build
 /.vscode
+/.cache
+/.wwebjs_auth
+/.wwebjs_cache
 # Logs
 logs
 *.log

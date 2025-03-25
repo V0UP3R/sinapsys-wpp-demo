@@ -7,7 +7,7 @@ export class MessageController {
   constructor(private readonly whatsappService: WhatsappService) {}
 
   // Endpoint protegido por JWT para disparar mensagem
-  @UseGuards(JwtAuthGuard)
+  // @UseGuards(JwtAuthGuard)
   @Post('send')
   async sendMessage(
     @Body() body: { to: string; message: string },
