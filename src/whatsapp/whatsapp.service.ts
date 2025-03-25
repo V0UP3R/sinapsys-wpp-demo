@@ -35,7 +35,6 @@ export class WhatsappService implements OnModuleInit {
           '--remote-debugging-port=9222',
         ],
         headless: true,
-        executablePath: chrome, // Caminho do Chromium embutido
       },
       authStrategy: new LocalAuth({dataPath}),
     });
@@ -72,10 +71,10 @@ export class WhatsappService implements OnModuleInit {
       const response = await this.nlpManager.process('pt', normalizedText);
   
       if (response.intent === 'confirmar' && response.score > 0.8) {
-        await this.client.sendMessage(message.from, 'Ação confirmada!');
+        await this.client.sendMessage(message.from, 'Confirmei seu atendimento te aguardamos ansiosos! 😁');
         this.pendingConfirmations.delete(message.from);
       } else if (response.intent === 'cancelar' && response.score > 0.8) {
-        await this.client.sendMessage(message.from, 'Ação cancelada!');
+        await this.client.sendMessage(message.from, 'Cancelei seu atendimento, caso tenha alguma dúvida basta entrar em contato conosco! 😁');
         this.pendingConfirmations.delete(message.from);
       } else {
         this.logger.log('Resposta não foi suficientemente clara. Nenhuma ação tomada.');
