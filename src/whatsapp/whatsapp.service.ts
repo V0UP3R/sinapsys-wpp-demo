@@ -112,12 +112,6 @@ export class WhatsappService implements OnModuleInit {
   formatNumber(number: string): string {
     return number.replace('+', '') + '@c.us';
   }
-  
-  // Envia uma mensagem via WhatsApp
-  async sendMessage(to: string, message: string) {
-    const formattedTo = this.formatNumber(to);
-    return this.client.sendMessage(formattedTo, message);
-  }
 
   // Envia uma solicitação de confirmação e registra o chat
   async requestConfirmation(to: string, message: string) {
