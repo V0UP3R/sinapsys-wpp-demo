@@ -17,10 +17,18 @@ import { PendingConfirmation } from './message/entities/message.entity';
     ScheduleModule.forRoot(),
     HttpModule,
     TypeOrmModule.forRoot({
-      type: 'postgres', // ou outro banco suportado
-      url: process.env.DATABASE_URL, // Connection string aqui
+      type: 'postgres',
+      url: process.env.DATABASE_URL,
+      ssl: {
+        rejectUnauthorized: false,
+      },
+      extra: {
+        ssl: {
+          rejectUnauthorized: false,
+        },
+      },
       autoLoadEntities: true,
-      synchronize: false, // Mantenha false em produção
+      synchronize: false,
     }),
     TypeOrmModule.forFeature([PendingConfirmation]),
   ],
