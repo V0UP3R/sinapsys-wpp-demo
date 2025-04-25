@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Req } from '@nestjs/common';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { JwtAuthGuard } from '../auth/auth.guard';
 
@@ -6,13 +6,35 @@ import { JwtAuthGuard } from '../auth/auth.guard';
 export class MessageController {
   constructor(private readonly whatsappService: WhatsappService) {}
 
-  // Endpoint protegido por JWT para disparar mensagem
-  // @UseGuards(JwtAuthGuard)
+  @Post('connect')
+  async connect(@Req() req): Promise<{ qrUrl: string }> {
+    const userId = req.user.id;
+    const qrUrl = await this.whatsappService.getQrCodeUrl(userId);
+    return { qrUrl };
+  }
+  
+  /** Disparar mensagem usando sessão do usuário autenticado */
   @Post('send')
   async sendMessage(
-    @Body() body: { to: string; message: string; appointmentId: string},
+    @Req() req,
+    @Body() body: { to: string; message: string; appointmentId: number },
   ) {
-    await this.whatsappService.sendMessage(body.to, body.message,+body.appointmentId);
+    const userId = req.user.id;
+    await this.whatsappService.sendMessage(
+      userId,
+      body.to,
+      body.message,
+      body.appointmentId,
+    );
     return { status: 'Mensagem enviada!' };
   }
+  // // Endpoint protegido por JWT para disparar mensagem
+  // // @UseGuards(JwtAuthGuard)
+  // @Post('send')
+  // async sendMessage(
+  //   @Body() body: { to: string; message: string; appointmentId: string},
+  // ) {
+  //   await this.whatsappService.sendMessage(body.to, body.message,+body.appointmentId);
+  //   return { status: 'Mensagem enviada!' };
+  // }
 }
