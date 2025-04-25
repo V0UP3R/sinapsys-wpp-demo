@@ -6,6 +6,6 @@ async function bootstrap() {
     logger: ['error', 'warn', 'log', 'debug', 'verbose']
   });
   await app.listen(3002);
-  console.log('API rodando na porta 3000');
+  console.log('API rodando na porta 3002');
 }
 bootstrap();

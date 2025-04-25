@@ -3,12 +3,13 @@ import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { JwtAuthGuard } from '../auth/auth.guard';
 
 @Controller('message')
+@UseGuards(JwtAuthGuard) 
 export class MessageController {
   constructor(private readonly whatsappService: WhatsappService) {}
 
   @Post('connect')
   async connect(@Req() req): Promise<{ qrUrl: string }> {
-    const userId = req.user.id;
+    const userId = req.user.userId;
     const qrUrl = await this.whatsappService.getQrCodeUrl(userId);
     return { qrUrl };
   }
@@ -19,7 +20,7 @@ export class MessageController {
     @Req() req,
     @Body() body: { to: string; message: string; appointmentId: number },
   ) {
-    const userId = req.user.id;
+    const userId = req.user.userId;
     await this.whatsappService.sendMessage(
       userId,
       body.to,
