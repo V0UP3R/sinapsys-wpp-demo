@@ -8,10 +8,9 @@ export class MessageController {
   constructor(private readonly whatsappService: WhatsappService) {}
 
   @Post('connect')
-  async connect(@Req() req): Promise<{ qrUrl: string }> {
-    const userId = req.user.userId;
-    const qrUrl = await this.whatsappService.getQrCodeUrl(userId);
-    return { qrUrl };
+  async connect(@Body() body: {phone:string}): Promise<{ qrCodeUrl: string }> {
+    const qrCodeUrl = await this.whatsappService.connect(body.phone);
+    return { qrCodeUrl };
   }
   
   /** Disparar mensagem usando sessão do usuário autenticado */
@@ -29,13 +28,4 @@ export class MessageController {
     );
     return { status: 'Mensagem enviada!' };
   }
-  // // Endpoint protegido por JWT para disparar mensagem
-  // // @UseGuards(JwtAuthGuard)
-  // @Post('send')
-  // async sendMessage(
-  //   @Body() body: { to: string; message: string; appointmentId: string},
-  // ) {
-  //   await this.whatsappService.sendMessage(body.to, body.message,+body.appointmentId);
-  //   return { status: 'Mensagem enviada!' };
-  // }
 }
