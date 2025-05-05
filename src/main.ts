@@ -18,24 +18,6 @@ async function bootstrap() {
     });
   }
 
-  process.on('uncaughtException', (err: Error) => {
-    if (err.message.includes('EBUSY')) {
-      Logger.warn(`Ignorado uncaughtException EBUSY: ${err.message}`);
-      return;
-    }
-    Logger.error('Uncaught Exception:', err.stack || err);
-    process.exit(1);
-  });
-  
-  process.on('unhandledRejection', (reason: any) => {
-    const message = reason instanceof Error ? reason.message : String(reason);
-    if (message.includes('EBUSY')) {
-      Logger.warn(`Ignorado unhandledRejection EBUSY: ${message}`);
-      return;
-    }
-    Logger.error('Unhandled Rejection:', reason);
-    process.exit(1);
-  });
   await app.listen(3002);
   console.log('API rodando na porta 3002');
 }
