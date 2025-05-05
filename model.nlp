@@ -323,12 +323,12 @@
           },
           {
             "domain": "default",
-            "utterance": "sim, pode confirmar",
+            "utterance": "sim pode confirmar",
             "intent": "confirmar"
           },
           {
             "domain": "default",
-            "utterance": "por favor, confirme",
+            "utterance": "por favor confirme",
             "intent": "confirmar"
           },
           {
@@ -343,22 +343,22 @@
           },
           {
             "domain": "default",
-            "utterance": "com certeza, confirma",
+            "utterance": "com certeza confirma",
             "intent": "confirmar"
           },
           {
             "domain": "default",
-            "utterance": "sem duvidas, confirmo",
+            "utterance": "sem duvidas confirmo",
             "intent": "confirmar"
           },
           {
             "domain": "default",
-            "utterance": "estou de acordo, pode prosseguir",
+            "utterance": "estou de acordo pode prosseguir",
             "intent": "confirmar"
           },
           {
             "domain": "default",
-            "utterance": "confirmado, prossiga",
+            "utterance": "confirmado prossiga",
             "intent": "confirmar"
           },
           {
@@ -458,12 +458,12 @@
           },
           {
             "domain": "default",
-            "utterance": "nao, cancele",
+            "utterance": "nao cancele",
             "intent": "cancelar"
           },
           {
             "domain": "default",
-            "utterance": "por favor, cancele",
+            "utterance": "por favor cancele",
             "intent": "cancelar"
           },
           {
@@ -478,27 +478,27 @@
           },
           {
             "domain": "default",
-            "utterance": "nao, obrigado",
+            "utterance": "nao obrigado",
             "intent": "cancelar"
           },
           {
             "domain": "default",
-            "utterance": "nao, recuso",
+            "utterance": "nao recuso",
             "intent": "cancelar"
           },
           {
             "domain": "default",
-            "utterance": "nao, nao concordo",
+            "utterance": "nao nao concordo",
             "intent": "cancelar"
           },
           {
             "domain": "default",
-            "utterance": "cancelado, por favor interrompa",
+            "utterance": "cancelado por favor interrompa",
             "intent": "cancelar"
           },
           {
             "domain": "default",
-            "utterance": "pare, nao quero",
+            "utterance": "pare nao quero",
             "intent": "cancelar"
           },
           {
@@ -1079,11 +1079,11 @@
       ],
       [
         "pt",
-        "sim, pode confirmar"
+        "sim pode confirmar"
       ],
       [
         "pt",
-        "por favor, confirme"
+        "por favor confirme"
       ],
       [
         "pt",
@@ -1095,19 +1095,19 @@
       ],
       [
         "pt",
-        "com certeza, confirma"
+        "com certeza confirma"
       ],
       [
         "pt",
-        "sem duvidas, confirmo"
+        "sem duvidas confirmo"
       ],
       [
         "pt",
-        "estou de acordo, pode prosseguir"
+        "estou de acordo pode prosseguir"
       ],
       [
         "pt",
-        "confirmado, prossiga"
+        "confirmado prossiga"
       ],
       [
         "pt",
@@ -1187,11 +1187,11 @@
       ],
       [
         "pt",
-        "nao, cancele"
+        "nao cancele"
       ],
       [
         "pt",
-        "por favor, cancele"
+        "por favor cancele"
       ],
       [
         "pt",
@@ -1203,23 +1203,23 @@
       ],
       [
         "pt",
-        "nao, obrigado"
+        "nao obrigado"
       ],
       [
         "pt",
-        "nao, recuso"
+        "nao recuso"
       ],
       [
         "pt",
-        "nao, nao concordo"
+        "nao nao concordo"
       ],
       [
         "pt",
-        "cancelado, por favor interrompa"
+        "cancelado por favor interrompa"
       ],
       [
         "pt",
-        "pare, nao quero"
+        "pare nao quero"
       ],
       [
         "pt",
