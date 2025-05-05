@@ -8,8 +8,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { firstValueFrom } from 'rxjs';
 import { confirmExamples, cancelExamples } from './nlp.train';
 import { WhatsappConnection } from './entities/whatsapp-connection.entity';
-import { rm } from 'fs/promises';
-import { join } from 'path';
 import { NlpManager } from 'node-nlp';
 
 @Injectable()
