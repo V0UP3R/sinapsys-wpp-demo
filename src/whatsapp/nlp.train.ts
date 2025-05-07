@@ -14,3 +14,13 @@ export const cancelExamples = [
   "não quero confirmar", "cancelar o atendimento", "não, obrigado",
   "não, recuso", "não, não concordo", "cancelado, por favor interrompa", "pare, não quero"
 ];
+
+export const greetExamples = [
+  "oi", "olá", "bom dia", "boa tarde", "boa noite",
+  "tudo bem?", "e aí?", "fala aí", "oiê", "opa"
+];
+
+export const thanksExamples = [
+  "obrigado", "obrigada", "valeu", "brigadão", "muito obrigado",
+  "agradecido", "thanks", "grato", "grata"
+];

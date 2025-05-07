@@ -6,7 +6,7 @@ import { HttpService } from '@nestjs/axios';
 import { PendingConfirmation } from 'src/message/entities/message.entity';
 import { v4 as uuidv4 } from 'uuid';
 import { firstValueFrom } from 'rxjs';
-import { confirmExamples, cancelExamples } from './nlp.train';
+import { confirmExamples, cancelExamples, greetExamples, thanksExamples } from './nlp.train';
 import { WhatsappConnection } from './entities/whatsapp-connection.entity';
 import { NlpManager } from 'node-nlp';
 
@@ -15,6 +15,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private sessions = new Map<string, Whatsapp>();
   private nlpManager = new NlpManager({ languages: ['pt'] });
   private readonly logger = new Logger(WhatsappService.name);
+  private readonly highThreshold = 0.9; 
+  private readonly lowThreshold  = 0.7; 
 
   // Paths para Chrome/Chromium cross-platform
   private readonly defaultChromeLinux = '/usr/bin/google-chrome-stable';
@@ -175,20 +177,64 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleIncoming(phone: string, message: any) {
-    if (!message.body || typeof message.body !== 'string') {
-      this.logger.log(`[${phone}] Mensagem não textual recebida, ignorando.`);
-      return;
-    }
+    if (!message.body || typeof message.body !== 'string') return;
     this.logger.log(`[${phone}] Received: ${message.body}`);
-    const confirmation = await this.pendingRepo.findOne({ where: { phone: message.from } });
-    if (!confirmation) return;
+  
+    // Só processa quem tem pendência
+    const pending = await this.pendingRepo.findOne({ where: { phone: message.from } });
+    if (!pending) return;
+  
     const normalized = this.normalize(message.body);
-    const response = await this.nlpManager.process('pt', normalized);
-    if (response.intent === 'confirmar' && response.score > 0.8) {
-      await this.confirm(confirmation, phone, message.from);
-    } else if (response.intent === 'cancelar' && response.score > 0.8) {
-      await this.cancel(confirmation, phone, message.from);
+    const response   = await this.nlpManager.process('pt', normalized);
+  
+    this.logger.log(`[NLU] Intent: ${response.intent} (score: ${response.score.toFixed(2)})`);
+  
+    switch (response.intent) {
+      case 'confirmar':
+        if (response.score >= this.highThreshold) {
+          return this.confirm(pending, phone, message.from);
+        } else if (response.score >= this.lowThreshold) {
+          return this.askClarification(phone, message.from);
+        }
+        break;
+  
+      case 'cancelar':
+        if (response.score >= this.highThreshold) {
+          return this.cancel(pending, phone, message.from);
+        } else if (response.score >= this.lowThreshold) {
+          return this.askClarification(phone, message.from);
+        }
+        break;
+  
+      case 'saudacao':
+        return this.sessions.get(phone)?.sendText(
+          message.from,
+          'Olá! Para confirmar, responda **confirmar**. Para cancelar, responda **cancelar**.'
+        );
+  
+      case 'agradecimento':
+        return this.sessions.get(phone)?.sendText(
+          message.from,
+          'Disponha! Se quiser confirmar, diga **confirmar**. Se quiser cancelar, diga **cancelar**.'
+        );
+  
+      default:
+        await this.askClarification(phone, message.from);
+        break;
     }
+  
+    // Se chegou aqui, score muito baixo ou intent não é confirm/cancel
+    await this.sessions.get(phone)?.sendText(
+      message.from,
+      'Desculpe, não entendi bem. Para confirmar diga **confirmar** e para cancelar diga **cancelar**.'
+    );
+  }
+
+  private async askClarification(phone: string, to: string) {
+    await this.sessions.get(phone)?.sendText(
+      to,
+      'Desculpe, não peguei direito. Você quer **confirmar** ou **cancelar** seu atendimento? Por favor responda apenas uma dessas duas palavras.'
+    );
   }
 
   private async confirm(conf: any, phone: string, from: string) {
@@ -241,10 +287,28 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async trainNlp() {
-    confirmExamples.forEach(ex => this.nlpManager.addDocument('pt', this.normalize(ex), 'confirmar'));
-    cancelExamples.forEach(ex => this.nlpManager.addDocument('pt', this.normalize(ex), 'cancelar'));
+    // SAUDAÇÕES
+    greetExamples.forEach(ex =>
+      this.nlpManager.addDocument('pt', this.normalize(ex), 'saudacao')
+    );
+  
+    // AGRADECIMENTOS (opcional)
+    thanksExamples.forEach(ex =>
+      this.nlpManager.addDocument('pt', this.normalize(ex), 'agradecimento')
+    );
+  
+    // CONFIRMAÇÃO / CANCELAMENTO
+    confirmExamples.forEach(ex =>
+      this.nlpManager.addDocument('pt', this.normalize(ex), 'confirmar')
+    );
+    cancelExamples.forEach(ex =>
+      this.nlpManager.addDocument('pt', this.normalize(ex), 'cancelar')
+    );
+  
+    // Fallback
     this.nlpManager.addDocument('pt', 'não entendi', 'fallback');
     this.nlpManager.addDocument('pt', 'pode repetir', 'fallback');
+  
     this.logger.log('Training NLP...');
     await this.nlpManager.train();
     this.nlpManager.save();
