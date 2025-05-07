@@ -175,6 +175,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleIncoming(phone: string, message: any) {
+    if (!message.body || typeof message.body !== 'string') {
+      this.logger.log(`[${phone}] Mensagem não textual recebida, ignorando.`);
+      return;
+    }
     this.logger.log(`[${phone}] Received: ${message.body}`);
     const confirmation = await this.pendingRepo.findOne({ where: { phone: message.from } });
     if (!confirmation) return;
@@ -189,37 +193,42 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   private async confirm(conf: any, phone: string, from: string) {
     const { data } = await this.getUserId(conf.appointmentId);
-    await firstValueFrom(
+    const response = await firstValueFrom(
       this.httpService.patch(
         `http://localhost:3001/appointment/${conf.appointmentId}`,
         { appointmentStatus: 'Confirmado', userId: data.userId },
         { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
       ),
     );
+    this.logger.log(`Response from API: ${response.status} - ${response.statusText}`);
     await this.sessions.get(phone)?.sendText(from, 'Confirmei seu atendimento! 😁');
     await this.pendingRepo.delete({ id: conf.id });
   }
 
   private async cancel(conf: any, phone: string, from: string) {
     const { data } = await this.getUserId(conf.appointmentId);
-    await firstValueFrom(
+    const response = await firstValueFrom(
       this.httpService.patch(
         `http://localhost:3001/appointment/${conf.appointmentId}`,
         { appointmentStatus: 'Cancelado', reasonLack: 'Cancelado pelo WhatsApp', userId: data.userId },
         { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
       ),
     );
+    this.logger.log(`Response from API: ${response.status} - ${response.statusText}`);
     await this.sessions.get(phone)?.sendText(from, 'Cancelei seu atendimento! 😁');
     await this.pendingRepo.delete({ id: conf.id });
   }
 
   private async getUserId(id:number){
-    return await firstValueFrom(
+    const response =  await firstValueFrom(
       this.httpService.get(
         `http://localhost:3001/appointment/find/user/appointment/${id}`,
         { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
       ),
     );
+
+    this.logger.log(`Response from API: ${response.status} - ${response.statusText}`);
+    return response;
   }
 
   private normalize(text: string) {
