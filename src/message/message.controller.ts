@@ -1,6 +1,8 @@
 import { Controller, Post, Body, UseGuards, Req } from '@nestjs/common';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { JwtAuthGuard } from '../auth/auth.guard';
+import { Public } from 'src/auth/decorators/public.decorator';
+import { InternalApiGuard } from 'src/auth/internal-api.guard';
 
 @Controller('message')
 @UseGuards(JwtAuthGuard) 
@@ -15,13 +17,13 @@ export class MessageController {
   
   /** Disparar mensagem usando sessão do usuário autenticado */
   @Post('send')
+  @Public()
+  @UseGuards(InternalApiGuard)
   async sendMessage(
-    @Req() req,
-    @Body() body: { to: string; message: string; appointmentId: number },
+    @Body() body: { phone:string; to: string; message: string; appointmentId: number },
   ) {
-    const userId = req.user.userId;
     await this.whatsappService.sendMessage(
-      userId,
+      body.phone,
       body.to,
       body.message,
       body.appointmentId,
