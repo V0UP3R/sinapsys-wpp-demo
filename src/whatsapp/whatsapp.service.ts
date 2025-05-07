@@ -70,7 +70,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     try {
       const client = await create(
         sessionName,
-        () => {}, // QR callback não usado
+        () => {}, 
         async (statusSession) => {
           if (statusSession === 'successChat') {
             this.logger.log(`Reconnected session for ${phone}`);
@@ -188,10 +188,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async confirm(conf: any, phone: string, from: string) {
+    const { data } = await this.getUserId(conf.appointmentId);
     await firstValueFrom(
       this.httpService.patch(
         `http://localhost:3001/appointment/${conf.appointmentId}`,
-        { appointmentStatus: 'Confirmado' },
+        { appointmentStatus: 'Confirmado', userId: data.userId },
         { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
       ),
     );
@@ -200,15 +201,25 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async cancel(conf: any, phone: string, from: string) {
+    const { data } = await this.getUserId(conf.appointmentId);
     await firstValueFrom(
       this.httpService.patch(
         `http://localhost:3001/appointment/${conf.appointmentId}`,
-        { appointmentStatus: 'Cancelado', reasonLack: 'Cancelado pelo WhatsApp' },
+        { appointmentStatus: 'Cancelado', reasonLack: 'Cancelado pelo WhatsApp', userId: data.userId },
         { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
       ),
     );
     await this.sessions.get(phone)?.sendText(from, 'Cancelei seu atendimento! 😁');
     await this.pendingRepo.delete({ id: conf.id });
+  }
+
+  private async getUserId(id:number){
+    return await firstValueFrom(
+      this.httpService.get(
+        `http://localhost:3001/appointment/find/user/appointment/${id}`,
+        { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
+      ),
+    );
   }
 
   private normalize(text: string) {
