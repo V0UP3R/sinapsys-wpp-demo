@@ -175,6 +175,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleIncoming(phone: string, message: any) {
+    if (!message.body || typeof message.body !== 'string') {
+      this.logger.log(`[${phone}] Mensagem não textual recebida, ignorando.`);
+      return;
+    }
     this.logger.log(`[${phone}] Received: ${message.body}`);
     const confirmation = await this.pendingRepo.findOne({ where: { phone: message.from } });
     if (!confirmation) return;
