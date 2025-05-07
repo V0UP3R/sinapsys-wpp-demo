@@ -209,13 +209,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       case 'saudacao':
         return this.sessions.get(phone)?.sendText(
           message.from,
-          'Olá! Para confirmar, responda **confirmar**. Para cancelar, responda **cancelar**.'
+          'Olá! Para confirmar, responda *confirmar*. Para cancelar, responda *cancelar*.'
         );
   
       case 'agradecimento':
         return this.sessions.get(phone)?.sendText(
           message.from,
-          'Disponha! Se quiser confirmar, diga **confirmar**. Se quiser cancelar, diga **cancelar**.'
+          'Disponha! Se quiser confirmar, diga *confirmar*. Se quiser cancelar, diga *cancelar*.'
         );
   
       default:
@@ -226,14 +226,14 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     // Se chegou aqui, score muito baixo ou intent não é confirm/cancel
     await this.sessions.get(phone)?.sendText(
       message.from,
-      'Desculpe, não entendi bem. Para confirmar diga **confirmar** e para cancelar diga **cancelar**.'
+      'Desculpe, não entendi bem. Para confirmar diga *confirmar* e para cancelar diga *cancelar*.'
     );
   }
 
   private async askClarification(phone: string, to: string) {
     await this.sessions.get(phone)?.sendText(
       to,
-      'Desculpe, não peguei direito. Você quer **confirmar** ou **cancelar** seu atendimento? Por favor responda apenas uma dessas duas palavras.'
+      'Desculpe, não peguei direito. Você quer *confirmar* ou *cancelar* seu atendimento? Por favor responda apenas uma dessas duas palavras.'
     );
   }
 
