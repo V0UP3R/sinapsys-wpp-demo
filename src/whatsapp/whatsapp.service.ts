@@ -112,10 +112,30 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             resolve(url);
           },
           async (statusSession, session) => {
+            if (statusSession === 'qrReadSuccess') {
+              await this.connRepo.update(
+                { phoneNumber: phone },
+                { status: 'connecting', qrCodeUrl: null },
+              );
+              await firstValueFrom(
+                this.httpService.post(
+                  'http://localhost:3001/whatsapp/status-update',
+                  { phoneNumber: phone },
+                  { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
+                ),
+              );
+            }
             if (statusSession === 'successChat') {
               await this.connRepo.update(
                 { phoneNumber: phone },
                 { status: 'connected', qrCodeUrl: null },
+              );
+              await firstValueFrom(
+                this.httpService.post(
+                  'http://localhost:3001/whatsapp/status-update',
+                  { phoneNumber: phone },
+                  { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
+                ),
               );
             }
           },
@@ -153,6 +173,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
   async disconnect(phone: string) {
+    await firstValueFrom(
+      this.httpService.post(
+        'http://localhost:3001/whatsapp/status-update',
+        { phoneNumber: phone },
+        { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
+      ),
+    );
     const client = this.sessions.get(phone);
     if (client) {
       try { await client.logout(); } catch (e) { this.logger.warn(`Logout failed for ${phone}: ${e.message}`); }
