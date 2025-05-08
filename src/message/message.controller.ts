@@ -30,4 +30,10 @@ export class MessageController {
     );
     return { status: 'Mensagem enviada!' };
   }
+
+  @Post('disconnect')
+  async disconnect(@Body() body: {phone:string}): Promise<{ success: boolean }> {
+    await this.whatsappService.disconnect(body.phone);
+    return { success: true };
+  }
 }
