@@ -18,5 +18,8 @@
     "forceConsistentCasingInFileNames": false,
     "noFallthroughCasesInSwitch": false,
     "esModuleInterop":true
+  },
+  "watchOptions": {
+    "watchFile": "fixedPollingInterval"
   }
 }
