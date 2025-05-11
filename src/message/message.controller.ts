@@ -33,6 +33,7 @@ export class MessageController {
   }
 
   @Post('disconnect')
+  @UseGuards(InternalApiGuard)
   async disconnect(@Body() body: {phone:string}): Promise<{ success: boolean }> {
     await this.whatsappService.disconnect(body.phone);
     return { success: true };
