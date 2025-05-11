@@ -10,6 +10,7 @@ export class MessageController {
   constructor(private readonly whatsappService: WhatsappService) {}
 
   @Post('connect')
+  @UseGuards(InternalApiGuard)
   async connect(@Body() body: {phone:string}): Promise<{ qrCodeUrl: string }> {
     const qrCodeUrl = await this.whatsappService.connect(body.phone);
     return { qrCodeUrl };
