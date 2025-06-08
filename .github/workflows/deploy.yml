@@ -1,0 +1,58 @@
+name: Deploy sinapsys-wpp-demo to EC2
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy-wpp:
+    name: Deploy sinapsys-wpp-demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.14.0'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci --omit=optional
+
+    - name: Build project
+      run: |
+        npm run build
+        npm prune --omit=dev --omit=optional
+
+    - name: Prepare SSH environment
+      run: |
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        ssh-keyscan -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+    - name: Deploy to EC2
+      run: |
+        # pacote de deployment
+        mkdir -p deployment
+        cp -R dist deployment/
+        cp package*.json deployment/
+        cp deploy-wpp.sh deployment/
+
+        # copiar para o EC2
+        rsync -avz -e "ssh -i ~/.ssh/deploy_key -p ${{ secrets.SSH_PORT }}" \
+          --include='dist/***' \
+          --include='package*.json' \
+          --include='deploy-wpp.sh' \
+          --exclude='*' \
+          deployment/ ubuntu@${{ secrets.SSH_HOST }}:/tmp/sinapsys-wpp-deploy/
+
+        # executar deploy remoto
+        ssh -i ~/.ssh/deploy_key -p ${{ secrets.SSH_PORT }} \
+          ubuntu@${{ secrets.SSH_HOST }} \
+          "cd /tmp/sinapsys-wpp-deploy && chmod +x deploy-wpp.sh && ./deploy-wpp.sh"
