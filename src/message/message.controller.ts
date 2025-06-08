@@ -10,6 +10,7 @@ export class MessageController {
   constructor(private readonly whatsappService: WhatsappService) {}
 
   @Post('connect')
+  @UseGuards(InternalApiGuard)
   async connect(@Body() body: {phone:string}): Promise<{ qrCodeUrl: string }> {
     const qrCodeUrl = await this.whatsappService.connect(body.phone);
     return { qrCodeUrl };
@@ -32,6 +33,7 @@ export class MessageController {
   }
 
   @Post('disconnect')
+  @UseGuards(InternalApiGuard)
   async disconnect(@Body() body: {phone:string}): Promise<{ success: boolean }> {
     await this.whatsappService.disconnect(body.phone);
     return { success: true };
