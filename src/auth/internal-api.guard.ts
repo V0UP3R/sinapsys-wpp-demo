@@ -13,7 +13,6 @@ declare module 'express' {
     };
   }
 }
-import * as jwt from 'jsonwebtoken';
 import * as CryptoJS from 'crypto-js';
 import * as dotenv from 'dotenv';
 

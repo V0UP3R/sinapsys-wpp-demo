@@ -3,7 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
 
 import { WhatsappService } from './whatsapp.service';
-import { PendingConfirmation } from 'src/message/entities/message.entity';
+import { PendingConfirmation } from '../message/entities/message.entity';
 import { WhatsappConnection } from './entities/whatsapp-connection.entity';
 
 @Module({
