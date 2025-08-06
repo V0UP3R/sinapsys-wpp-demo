@@ -5,7 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { MoreThan, Repository } from 'typeorm';
 import { create, Whatsapp } from 'venom-bot';
 import { HttpService } from '@nestjs/axios';
 import { PendingConfirmation } from '../message/entities/message.entity';
@@ -232,10 +232,14 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     const client = this.sessions.get(phone);
     if (!client) throw new Error('Client not connected');
     const formatted = to.replace('+', '') + '@c.us';
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 6 * 60 * 60 * 1000);
     const pending = this.pendingRepo.create({
       id: uuidv4(),
       appointmentId,
       phone: formatted,
+      createdAt: now,
+      expiresAt,
     });
     await this.pendingRepo.save(pending);
     return client.sendText(formatted, text);
@@ -252,7 +256,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     const pending = await this.pendingRepo.findOne({
       where: {
         phone: In(phoneVariations),
+        expiresAt: MoreThan(new Date())
       },
+      order: { createdAt: 'DESC' },
     });
 
     if (!pending) return;
@@ -335,6 +341,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.pendingRepo.delete({ id: conf.id });
+
+    await this.checkAndNotifyNextPendingAppointment(phone, from);
   }
 
   private async cancel(conf: any, phone: string, from: string) {
@@ -396,6 +404,8 @@ Se desejar remarcar uma nova consulta, por favor, entre em contato conosco.
     }
 
     await this.pendingRepo.delete({ id: conf.id });
+
+    await this.checkAndNotifyNextPendingAppointment(phone, from);
   }
 
   private async getUserId(id: number) {
@@ -456,5 +466,33 @@ Se desejar remarcar uma nova consulta, por favor, entre em contato conosco.
       withoutNine,
       withNine,
     ];
+  }
+
+  private async checkAndNotifyNextPendingAppointment(phone: string, from: string) {
+    const phoneVariations = this.generatePhoneVariations(from);
+    const nextPending = await this.pendingRepo.findOne({
+      where: { phone: In(phoneVariations), expiresAt: MoreThan(new Date()) },
+      order: { createdAt: 'ASC' },
+    });
+
+    // Se encontrar outra pendência, notifica o paciente
+    if (nextPending) {
+      try {
+        const details = await this.getAppointmentDetails(nextPending.appointmentId);
+        const patientName = details.patient.personalInfo.name;
+        const professionalName = details.professional.user.name;
+        const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
+        const appointmentTime = new Date(details.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+        const followUpMessage = `Obrigado, ${patientName}! Notamos que você também tem um agendamento com o(a) profissional ${professionalName} no dia ${appointmentDate} às ${appointmentTime} que ainda não foi respondido.
+
+Deseja também *confirmar* ou *cancelar* este horário?`;
+
+        await this.sessions.get(phone)?.sendText(from, followUpMessage);
+        this.logger.log(`Enviada mensagem de acompanhamento para o agendamento ${nextPending.appointmentId} para o número ${from}.`);
+      } catch (error) {
+        this.logger.error(`Falha ao notificar próxima pendência para ${from}: ${error.message}`);
+      }
+    }
   }
 }
