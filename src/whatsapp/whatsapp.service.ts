@@ -285,49 +285,62 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private async confirm(conf: any, phone: string, from: string) {
     // 1. Atualiza o status na API (como já fazia)
     const { data: userData } = await this.getUserId(conf.appointmentId);
-    await firstValueFrom(
-      this.httpService.patch(
-        `http://localhost:3001/appointment/${conf.appointmentId}`,
-        { appointmentStatus: 'Confirmado', userId: userData.userId },
-        { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
-      ),
-    );
+    try {
+      await firstValueFrom(
+        this.httpService.patch(
+          `http://localhost:3001/appointment/block/${conf.appointmentId}`, // <- ROTA MODIFICADA
+          { status: 'Confirmado' }, // <- Corpo da requisição com o novo status
+          { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
+        ),
+      );
+    } catch (error) {
+       this.logger.error(`Falha ao atualizar bloco para CONFIRMADO para o appt ID ${conf.appointmentId}: ${error.message}`);
+       await this.sessions.get(phone)?.sendText(from, 'Ocorreu um erro ao processar sua confirmação. Por favor, tente novamente ou contate a clínica.');
+       return;
+    }
 
     try {
       // 2. Busca os detalhes completos do agendamento
       const details = await this.getAppointmentDetails(conf.appointmentId);
 
-      // ATENÇÃO: Verifique se a estrutura de 'details' corresponde ao que sua API retorna.
-      // Exemplo: details.patient.name, details.professional.name, etc.
       const patientName = details.patient.personalInfo.name;
       const professionalName = details.professional.user.name;
       const clinicName = details.clinic.name;
       const appointmentDate = new Date(details.date).toLocaleDateString(
         'pt-BR',
       ); // Formata a data
-      const appointmentTime = new Date(details.date).toLocaleTimeString(
-        'pt-BR',
-        { hour: '2-digit', minute: '2-digit' },
-      ); // Formata a hora
       const address = details.clinic.address;
-      const clinicPhone = details.clinic.phone; // Supondo que o telefone da clínica está aqui
+      const clinicPhone = details.clinic.phone;
+
+      // Adicionado: Lógica para identificar o responsável
+      const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
+      const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
+
+      // Adicionado: Identifica o tipo de saudação com base no destinatário
+      const greeting = responsibleInfo 
+            ? `Olá, ${recipientName}! O agendamento de ${patientName} com ${professionalName} na clínica ${clinicName} está confirmado.`
+            : `Olá, ${recipientName}! Seu agendamento com ${professionalName} na clínica ${clinicName} está confirmado.`;
+
+      const blockStartTime = new Date(details.clinic.blockStartTime);
+      const blockEndTime = new Date(details.clinic.blockEndTime);
+      const durationMinutes = (blockEndTime.getTime() - blockStartTime.getTime()) / (1000 * 60);
 
       // 3. Monta a mensagem detalhada de confirmação
-      const confirmationMessage = `✅ *Agendamento Confirmado com Sucesso!*
+      const confirmationMessage = `✅ *Confirmado!*
 
-    Olá, ${patientName}! Seu horário com o(a) profissional ${professionalName} na ${clinicName} está confirmado.
+${greeting}
 
-      🗓️ *Dia:* ${appointmentDate}
-      ⏰ *Horário:* ${appointmentTime}
-      📍 *Endereço:* ${address}
+🗓️ *Data:* ${appointmentDate}
+⏰ *Horário:* Das ${blockStartTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} às ${blockEndTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+⏳ *Duração Estimada:* ${durationMinutes} minutos
+📍 *Local:* ${address}
 
-    Guarde este contato em sua agenda para receber futuros lembretes.
+Por favor, chegue com alguns minutos de antecedência. Em caso de dúvidas ou se precisar reagendar, entre em contato.
+📞 *Contato da Clínica:* ${clinicPhone}
 
-    Para dúvidas ou necessidade de reagendamento, por favor, entre em contato com a clínica.
-    📞 Contato: ${clinicPhone}
-
-    ---
-    🤖 _Esta é uma mensagem automática._`;
+Até lá!
+---
+_Esta é uma mensagem automática. Por favor, não responda._`;
 
       await this.sessions.get(phone)?.sendText(from, confirmationMessage);
     } catch (error) {
@@ -348,17 +361,22 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private async cancel(conf: any, phone: string, from: string) {
     // 1. Atualiza o status na API (como já fazia)
     const { data: userData } = await this.getUserId(conf.appointmentId);
-    await firstValueFrom(
-      this.httpService.patch(
-        `http://localhost:3001/appointment/${conf.appointmentId}`,
-        {
-          appointmentStatus: 'Cancelado',
-          reasonLack: 'Cancelado pelo WhatsApp',
-          userId: userData.userId,
-        },
-        { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
-      ),
-    );
+    try {
+      await firstValueFrom(
+        this.httpService.patch(
+          `http://localhost:3001/appointment/block/${conf.appointmentId}`, // <- ROTA MODIFICADA
+          {
+            status: 'Cancelado', // <- Corpo da requisição
+            reasonLack: 'Cancelado pelo WhatsApp',
+          },
+          { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
+        ),
+      );
+    } catch (error) {
+      this.logger.error(`Falha ao atualizar bloco para CANCELADO para o appt ID ${conf.appointmentId}: ${error.message}`);
+      await this.sessions.get(phone)?.sendText(from, 'Ocorreu um erro ao processar seu cancelamento. Por favor, tente novamente ou contate a clínica.');
+      return;
+    }
 
     try {
       // 2. Busca os detalhes completos do agendamento
@@ -369,28 +387,28 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       const appointmentDate = new Date(details.date).toLocaleDateString(
         'pt-BR',
       );
-      const appointmentTime = new Date(details.date).toLocaleTimeString(
-        'pt-BR',
-        { hour: '2-digit', minute: '2-digit' },
-      );
       const clinicPhone = details.clinic.phone;
+
+      // Adicionado: Lógica para identificar o responsável
+      const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
+      const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
+
+      // Adicionado: Identifica o tipo de saudação com base no destinatário
+      const greeting = responsibleInfo 
+            ? `Olá, ${recipientName}. Conforme sua solicitação, o agendamento de ${patientName} com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`
+            : `Olá, ${recipientName}. Conforme sua solicitação, o agendamento com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`;
 
       // 3. Monta a mensagem detalhada de cancelamento
       const cancellationMessage = `❌ *Agendamento Cancelado*
 
-Olá, ${patientName}. Conforme sua solicitação, o agendamento abaixo foi cancelado:
+${greeting}
 
-  *Profissional:* ${professionalName}
-  *Dia:* ${appointmentDate}
-  *Horário:* ${appointmentTime}
+Se desejar remarcar, por favor, entre em contato diretamente com a clínica.
+📞 *Contato:* ${clinicPhone}
 
-Este horário agora está disponível para outros pacientes.
-
-Se desejar remarcar uma nova consulta, por favor, entre em contato conosco.
-📞 Contato: ${clinicPhone}
-
+Esperamos vê-lo em breve.
 ---
-🤖 _Esta é uma mensagem automática._`;
+_Esta é uma mensagem automática._`;
 
       await this.sessions.get(phone)?.sendText(from, cancellationMessage);
     } catch (error) {
