@@ -321,8 +321,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             ? `Olá, ${recipientName}! O agendamento de ${patientName} com ${professionalName} na clínica ${clinicName} está confirmado.`
             : `Olá, ${recipientName}! Seu agendamento com ${professionalName} na clínica ${clinicName} está confirmado.`;
 
-      const blockStartTime = new Date(details.clinic.blockStartTime);
-      const blockEndTime = new Date(details.clinic.blockEndTime);
+      const blockStartTime = new Date(details.blockStartTime);
+      const blockEndTime = new Date(details.blockEndTime);
       const durationMinutes = (blockEndTime.getTime() - blockStartTime.getTime()) / (1000 * 60);
 
       // 3. Monta a mensagem detalhada de confirmação
