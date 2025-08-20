@@ -265,11 +265,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     const normalizedText = this.normalize(message.body);
 
-    if (normalizedText === 'confirmar') {
+    if (normalizedText === 'confirmar' || normalizedText === 'confirmado') {
       return this.confirm(pending, phone, message.from);
     }
 
-    if (normalizedText === 'cancelar') {
+    if (normalizedText === 'cancelar'|| normalizedText === 'cancelado') {
       return this.cancel(pending, phone, message.from);
     }
 
