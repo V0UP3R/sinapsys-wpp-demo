@@ -280,7 +280,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   ) {
     const client = this.sessions.get(phone);
     if (!client) throw new Error('Client not connected');
-    const formatted = to.includes('@c.us') ? to : `${to.replace('+', '')}@c.us`;
+    const formatted = to.replace('+', '') + '@c.us';
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 6 * 60 * 60 * 1000);
@@ -329,12 +329,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         'Desculpe, não entendi. Por favor, responda apenas com a palavra *confirmar* ou *cancelar*.',
       );
   }
-
-  // As funções abaixo (confirm, cancel, etc.) não precisam de alterações na lógica,
-  // apenas nas chamadas de envio de mensagem, que já foram corrigidas.
-  // ... (todo o resto do seu código: confirm, cancel, getUserId, normalize, etc. permanece igual)
-  // ...
-  // Eu vou colar as funções restantes aqui para manter o arquivo completo
 
   private async confirm(conf: any, phone: string, from: string) {
     try {
