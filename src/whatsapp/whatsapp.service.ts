@@ -14,20 +14,45 @@ import { WhatsappConnection } from './entities/whatsapp-connection.entity';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// ALTERAÇÃO: Importações do whatsapp-web.js
-import { Client, LocalAuth, Message } from 'whatsapp-web.js';
+// Importações da biblioteca Baileys
+import makeWASocket, {
+  Browsers,
+  DisconnectReason,
+  useMultiFileAuthState,
+  WAMessage,
+  WASocket,
+} from '@whiskeysockets/baileys';
+import { Boom } from '@hapi/boom';
+import pino from 'pino';
+
+// Interface para a carga útil da mensagem na fila
+interface MessagePayload {
+  to: string; // Pode ser um número cru ou um JID completo
+  text: string;
+  isReply: boolean;
+  skipValidation?: boolean; // NOVO: Flag para pular a validação em respostas
+}
 
 @Injectable()
 export class WhatsappService implements OnModuleInit, OnModuleDestroy {
-  // ALTERAÇÃO: O tipo do Map agora é o Client do whatsapp-web.js
-  private sessions = new Map<string, Client>();
+  private sessions = new Map<string, WASocket>();
   private connectingSessions = new Set<string>();
   private readonly logger = new Logger(WhatsappService.name);
+  private readonly SESSIONS_DIR = path.join(process.cwd(), '.baileys_auth');
 
-  // Paths para Chrome/Chromium cross-platform (mantido)
-  private readonly defaultChromeLinux = '/usr/bin/google-chrome-stable';
-  private readonly defaultChromeWin =
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  // Gerenciador de filas de mensagens para controlar o fluxo de envio
+  private messageQueues = new Map<string, {
+    queue: MessagePayload[];
+    isProcessing: boolean;
+  }>();
+
+  // Constantes para o intervalo de envio de RESPOSTAS INTERATIVAS
+  private readonly MIN_REPLY_INTERVAL = 2000; // 2 segundos
+  private readonly MAX_REPLY_INTERVAL = 5000; // 5 segundos
+
+  // Constantes para o intervalo de envio EM MASSA (bom cidadão)
+  private readonly MIN_BULK_INTERVAL = 30000; // 30 segundos
+  private readonly MAX_BULK_INTERVAL = 60000; // 1 minuto
 
   constructor(
     private readonly httpService: HttpService,
@@ -36,8 +61,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     @InjectRepository(WhatsappConnection)
     private readonly connRepo: Repository<WhatsappConnection>,
   ) {
+    if (!fs.existsSync(this.SESSIONS_DIR)) {
+      fs.mkdirSync(this.SESSIONS_DIR, { recursive: true });
+    }
     if (process.env.NODE_ENV === 'development') {
-      this.logger.debug('Dev mode - special controls enabled');
+      this.logger.debug('Modo de desenvolvimento - Controles especiais ativados');
       process.on('SIGINT', () => this.gracefulShutdown());
     }
   }
@@ -45,289 +73,340 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     const conns = await this.connRepo.find({ where: { status: 'connected' } });
     for (const conn of conns) {
-      await this.restoreSession(conn.phoneNumber);
+      this.logger.log(`Restaurando sessão para ${conn.phoneNumber}...`);
+      await this.connect(conn.phoneNumber);
     }
   }
 
   async onModuleDestroy() {
-    this.logger.log('Destroying all active sessions...');
+    this.logger.log('Destruindo todas as sessões ativas...');
     for (const sessionId of this.sessions.keys()) {
-      await this.disconnect(sessionId, false); // false para não deletar do DB ao desligar
+      await this.disconnect(sessionId, false);
     }
   }
 
-  // ALTERAÇÃO: Opções ajustadas para o formato do puppeteer do whatsapp-web.js
-  private getSessionOptions(sessionName: string) {
-    return {
-      authStrategy: new LocalAuth({ clientId: sessionName }),
-      puppeteer: {
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--no-first-run',
-          '--no-zygote',
-        ],
-        executablePath:
-          process.platform === 'win32' ? undefined : this.defaultChromeLinux,
-      },
-    };
+  private getSessionPath(phone: string): string {
+    return path.join(this.SESSIONS_DIR, `session-${phone}`);
   }
 
-  // ALTERAÇÃO: Lógica de restauração adaptada
-  private async restoreSession(phone: string) {
-    this.logger.log(`Attempting to restore session for ${phone}...`);
-    try {
-      const client = new Client(this.getSessionOptions(phone));
-
-      client.on('ready', () => {
-        this.logger.log(`Session for ${phone} restored and ready!`);
-        this.sessions.set(phone, client);
-      });
-
-      // Se a sessão estiver perdida, ele vai emitir um QR, o que não deveria acontecer.
-      // A lógica de desconexão cuidará da limpeza se a restauração falhar.
-      client.on('disconnected', (reason) =>
-        this.handleDisconnect(phone, reason),
-      );
-      client.on('message', (msg) => this.handleIncoming(phone, msg));
-
-      await client.initialize();
-    } catch (err) {
-      this.logger.error(
-        `Failed to restore session for ${phone}: ${err.message}`,
-      );
-    }
-  }
-
-  // ALTERAÇÃO: Lógica de conexão completamente reescrita para whatsapp-web.js
- async connect(phone: string): Promise<string> {
-    if (this.connectingSessions.has(phone)) {
-        this.logger.warn(`[${phone}] Connection attempt rejected: another connection is already in progress.`);
-        throw new Error('A connection for this number is already in progress.');
+  async connect(phone: string): Promise<string | null> {
+    if (this.sessions.has(phone) || this.connectingSessions.has(phone)) {
+        this.logger.warn(`[${phone}] Conexão já estabelecida ou em progresso.`);
+        return null;
     }
 
-    // Garante que qualquer cliente ativo na memória seja desconectado primeiro.
-    if (this.sessions.has(phone)) {
-        this.logger.log(`[${phone}] Disconnecting existing in-memory session before creating a new one.`);
-        await this.disconnect(phone, false); // false para não deletar do DB ainda
-    }
-    
-    // --- LÓGICA DE LIMPEZA DA PASTA DA SESSÃO ---
-    try {
-        const sessionPath = path.join(process.cwd(), '.wwebjs_auth', `session-${phone}`);
-        if (fs.existsSync(sessionPath)) {
-            this.logger.log(`[${phone}] Existing session folder found. Deleting for a clean start...`);
-            fs.rmSync(sessionPath, { recursive: true, force: true });
-            this.logger.log(`[${phone}] Session folder deleted successfully.`);
-        }
-    } catch (e) {
-        this.logger.error(`[${phone}] Error deleting session folder: ${e.message}`);
-        // Se a limpeza falhar, é melhor parar para evitar estado inconsistente.
-        throw new Error(`Failed to clear session folder for ${phone}. Please check permissions.`);
-    }
-    // --- FIM DA LÓGICA DE LIMPEZA ---
+    this.connectingSessions.add(phone);
+    const sessionPath = this.getSessionPath(phone);
 
-    try {
-        this.connectingSessions.add(phone);
-
-        // O resto da sua função `connect` permanece exatamente o mesmo...
-        // ... (código do new Promise, client.on('qr'), etc.)
-
-        let conn = await this.connRepo.findOne({ where: { phoneNumber: phone } });
-        if (!conn) {
-            conn = this.connRepo.create({ phoneNumber: phone });
-            conn = await this.connRepo.save(conn);
-            
-        }
-        const qrPromise = new Promise<string>((resolve, reject) => {
-            const client = new Client(this.getSessionOptions(phone));
-
-            const rejectWithCleanup = (err) => {
-                client.destroy().catch(e => this.logger.error(`Error destroying client on cleanup: ${e.message}`));
-                this.connRepo.update({ phoneNumber: phone }, { status: 'failed' });
-                reject(err);
-            };
-
-            client.on('qr', async (qr) => {
-                this.logger.log(`[${phone}] QR Code received.`);
-                const url = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(
-                    qr,
-                )}&size=300x300`;
-                resolve(url);
-            });
-
-            client.on('authenticated', async () => {
-                this.logger.log(`[${phone}] Authenticated successfully.`);
-                await this.connRepo.update(
-                    { phoneNumber: phone },
-                    { status: 'connecting', qrCodeUrl: null },
-                );
-            });
-
-            client.on('ready', async () => {
-                this.logger.log(`[${phone}] Client is ready!`);
-                this.sessions.set(phone, client);
-                await this.connRepo.update(
-                    { phoneNumber: phone },
-                    { status: 'connected', qrCodeUrl: null },
-                );
-                await firstValueFrom(
-                    this.httpService.post(
-                        'http://localhost:3001/whatsapp/status-update',
-                        { phoneNumber: phone },
-                        { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
-                    ),
-                );
-            });
-
-            client.on('disconnected', (reason) => this.handleDisconnect(phone, reason));
-            client.on('message', (message) => this.handleIncoming(phone, message));
-
-            client.initialize().catch(err => {
-                this.logger.error(`[${phone}] Client initialization failed:`, err);
-                rejectWithCleanup(err);
-            });
-        });
-
-        return qrPromise;
-
-    } catch (err) {
-        this.logger.error(`Error creating session for ${phone}: ${err.message}`, err.stack);
-        throw err;
-    } finally {
-        this.connectingSessions.delete(phone);
-    }
-}
-
-  private gracefulShutdown() {
-    this.logger.warn('Graceful shutdown initiated...');
-    this.onModuleDestroy()
-      .then(() => process.exit(0))
-      .catch(() => process.exit(1));
-  }
-
-  // ALTERAÇÃO: Nova função para lidar com desconexões
-  private async handleDisconnect(phone: string, reason: any) {
-    this.logger.warn(`[${phone}] Client disconnected. Reason: ${reason}`);
-    const client = this.sessions.get(phone);
-    if (client) {
+    return new Promise(async (resolve, reject) => {
         try {
-            await client.destroy(); // Encerra a instância do puppeteer
-        } catch (e) {
-            this.logger.error(`Error destroying client for ${phone}: ${e.message}`);
-        }
-    }
-    this.sessions.delete(phone);
-    await this.connRepo.delete({ phoneNumber: phone });
-    // Notificar o frontend que a conexão caiu
-    await firstValueFrom(
-      this.httpService.post(
-        'http://localhost:3001/whatsapp/status-update',
-        { phoneNumber: phone },
-        { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
-      ),
-    );
+            const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+    
+            const sock = makeWASocket({
+              auth: state,
+              browser: Browsers.macOS('Desktop'),
+              logger: pino({ level: 'silent' }) as any,
+            });
+    
+            let promiseResolved = false;
+    
+            const timeout = setTimeout(() => {
+              if (!promiseResolved) {
+                promiseResolved = true;
+                this.connectingSessions.delete(phone);
+                reject(new Error(`[${phone}] Tempo esgotado para conectar.`));
+              }
+            }, 60000); // 60 segundos de timeout
+    
+            sock.ev.on('creds.update', saveCreds);
+    
+            sock.ev.on('messages.upsert', async (m) => {
+              const msg = m.messages[0];
+              if (!msg.message || msg.key.fromMe) return;
+              await this.handleIncoming(phone, msg);
+            });
+    
+            sock.ev.on('connection.update', async (update) => {
+              const { connection, lastDisconnect, qr } = update;
+    
+              if (qr) {
+                this.logger.log(`[${phone}] QR Code recebido.`);
+                const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
+    
+                let conn = await this.connRepo.findOne({ where: { phoneNumber: phone } });
+                if (!conn) {
+                  conn = this.connRepo.create({ phoneNumber: phone });
+                  await this.connRepo.save(conn);
+                }
+                await this.connRepo.update({ phoneNumber: phone }, { qrCodeUrl: qrUrl });
+    
+                if (!promiseResolved) {
+                  promiseResolved = true;
+                  clearTimeout(timeout);
+                  resolve(qrUrl);
+                }
+              }
+    
+              if (connection === 'open') {
+                this.logger.log(`[${phone}] Conexão estabelecida com sucesso!`);
+                this.sessions.set(phone, sock);
+                this.connectingSessions.delete(phone);
+                await this.connRepo.update({ phoneNumber: phone }, { status: 'connected', qrCodeUrl: null });
+                await this.notifyFrontendStatus(phone);
+    
+                if (!promiseResolved) {
+                  promiseResolved = true;
+                  clearTimeout(timeout);
+                  resolve(null); // Conectado sem QR code (restauração de sessão)
+                }
+              }
+    
+              if (connection === 'close') {
+                const statusCode = (lastDisconnect.error as Boom)?.output?.statusCode;
+                
+                this.connectingSessions.delete(phone);
+                this.sessions.delete(phone);
+                await this.connRepo.update({ phoneNumber: phone }, { status: 'disconnected' });
+    
+                if (statusCode !== DisconnectReason.loggedOut) {
+                  this.logger.warn(`[${phone}] Conexão fechada (código: ${statusCode}), tentando reconectar em 5 segundos...`);
+                  setTimeout(() => this.connect(phone), 5000);
+                } else {
+                  this.logger.warn(`[${phone}] Desconectado (logged out). Removendo sessão permanentemente.`);
+                  if (fs.existsSync(sessionPath)) {
+                    fs.rmSync(sessionPath, { recursive: true, force: true });
+                  }
+                }
+                
+                if (!promiseResolved) {
+                  promiseResolved = true;
+                  clearTimeout(timeout);
+                  reject(lastDisconnect.error || new Error(`Connection closed with status code: ${statusCode}`));
+                }
+              }
+            });
+          } catch (err) {
+            this.connectingSessions.delete(phone);
+            reject(err);
+          }
+    });
   }
 
-  // ALTERAÇÃO: Lógica de desconexão adaptada
   async disconnect(phone: string, deleteFromDb = true) {
-    const client = this.sessions.get(phone);
-    if (client) {
-        try {
-            await client.destroy();
-            this.logger.log(`[${phone}] Client instance destroyed.`);
-        } catch (e) {
-            this.logger.warn(`Destroy failed for ${phone}: ${e.message}`);
-        }
-        // Removendo a chamada ao logout(), pois destroy() já encerra a conexão
-        // e o objetivo principal do logout() aqui (limpar a pasta) já será feito
-        // de forma mais controlada na função connect().
+    const sock = this.sessions.get(phone);
+    if (sock) {
+      await sock.logout();
     }
-    
-    // Remove da memória imediatamente após o destroy
     this.sessions.delete(phone);
-
+    this.messageQueues.delete(phone);
+    
+    const sessionPath = this.getSessionPath(phone);
+    if (fs.existsSync(sessionPath)) {
+      fs.rmSync(sessionPath, { recursive: true, force: true });
+    }
     if (deleteFromDb) {
-        await this.connRepo.delete({ phoneNumber: phone });
+      await this.connRepo.delete({ phoneNumber: phone });
     }
-
-    try {
-        await firstValueFrom(
-            this.httpService.post(
-                'http://localhost:3001/whatsapp/status-update',
-                { phoneNumber: phone },
-                { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
-            ),
-        );
-    } catch (e) {
-        this.logger.error(`[${phone}] Failed to notify frontend about disconnection: ${e.message}`);
-    }
-}
-
-  async getStatus(phone: string): Promise<string> {
-    const conn = await this.connRepo.findOne({ where: { phoneNumber: phone } });
-    return conn?.status || 'not-found';
+    await this.notifyFrontendStatus(phone);
+    this.logger.log(`[${phone}] Sessão desconectada e arquivos limpos.`);
   }
 
-  // ALTERAÇÃO: client.sendText -> client.sendMessage
+  private async enqueueMessage(phone: string, payload: MessagePayload) {
+    if (!this.sessions.has(phone)) {
+      this.logger.error(`[${phone}] Tentativa de enfileirar mensagem falhou: cliente não conectado.`);
+      return;
+    }
+
+    if (!this.messageQueues.has(phone)) {
+      this.messageQueues.set(phone, { queue: [], isProcessing: false });
+    }
+
+    const sessionQueue = this.messageQueues.get(phone);
+    sessionQueue.queue.push(payload);
+    this.logger.log(`[${phone}] Mensagem para ${payload.to} adicionada à fila. Tamanho atual: ${sessionQueue.queue.length}`);
+
+    if (!sessionQueue.isProcessing) {
+      this.processMessageQueue(phone);
+    }
+  }
+
+  // NOVO: Método para validar o número de telefone antes de enviar
+  private async validatePhoneNumber(sock: WASocket, number: string): Promise<string | null> {
+    try {
+        const cleaned = number.replace(/\D/g, '');
+        
+        // Lógica específica para números do Brasil para tratar o 9º dígito
+        if (cleaned.startsWith('55') && cleaned.length >= 10) {
+            const ddd = cleaned.substring(2, 4);
+            const body = cleaned.substring(4);
+
+            let withNine = '';
+            let withoutNine = '';
+
+            if (body.length === 9 && body.startsWith('9')) { // Formato: 55XX9XXXXXXXX
+                withNine = cleaned;
+                withoutNine = `55${ddd}${body.substring(1)}`;
+            } else if (body.length === 8) { // Formato: 55XX_XXXXXXXX
+                withNine = `55${ddd}9${body}`;
+                withoutNine = cleaned;
+            } else {
+                // Não é um formato de celular padrão, verifica o número como está
+                const [result] = await sock.onWhatsApp(cleaned);
+                return result?.exists ? result.jid : null;
+            }
+            
+            // Verifica a versão com '9' primeiro, que é a mais comum
+            const [resultWithNine] = await sock.onWhatsApp(withNine);
+            if (resultWithNine?.exists) {
+                this.logger.log(`[Validation] JID validado para ${number}: ${resultWithNine.jid}`);
+                return resultWithNine.jid;
+            }
+            
+            // Se falhar, verifica a versão sem '9'
+            const [resultWithoutNine] = await sock.onWhatsApp(withoutNine);
+            if (resultWithoutNine?.exists) {
+                this.logger.log(`[Validation] JID validado para ${number}: ${resultWithoutNine.jid}`);
+                return resultWithoutNine.jid;
+            }
+        } else {
+            // Para números não brasileiros, apenas verifica o número limpo
+            const [result] = await sock.onWhatsApp(cleaned);
+            if (result?.exists) {
+                return result.jid;
+            }
+        }
+
+        this.logger.warn(`[Validation] Nenhuma conta do WhatsApp encontrada para ${number}`);
+        return null;
+    } catch (error) {
+        this.logger.error(`[Validation] Erro ao validar o número ${number}: ${error.message}`);
+        return null;
+    }
+  }
+
+  private async processMessageQueue(phone: string) {
+    const sessionQueue = this.messageQueues.get(phone);
+    if (!sessionQueue || sessionQueue.isProcessing) {
+      return;
+    }
+
+    sessionQueue.isProcessing = true;
+    this.logger.log(`[${phone}] Iniciando processamento da fila de mensagens.`);
+
+    while (sessionQueue.queue.length > 0) {
+      const payload = sessionQueue.queue.shift();
+      const sock = this.sessions.get(phone);
+
+      if (sock && payload) {
+        try {
+          let finalJid: string | null = null;
+
+          if (payload.skipValidation) {
+            finalJid = payload.to;
+          } else {
+            finalJid = await this.validatePhoneNumber(sock, payload.to);
+          }
+          
+          if (!finalJid) {
+            this.logger.error(`[Queue] Número ${payload.to} inválido ou não encontrado no WhatsApp. Mensagem descartada.`);
+            continue; // Pula para a próxima mensagem da fila
+          }
+
+          this.logger.log(`[Queue] Enviando mensagem para ${finalJid} a partir da fila.`);
+          await sock.sendMessage(finalJid, { text: payload.text });
+
+          const interval = this.getRandomInterval(payload.isReply);
+          const type = payload.isReply ? 'resposta' : 'massa';
+          this.logger.log(`[Queue] Aguardando ${interval}ms para a próxima mensagem (tipo: ${type}).`);
+          await new Promise(resolve => setTimeout(resolve, interval));
+
+        } catch (error) {
+          this.logger.error(`[Queue] Erro ao enviar mensagem da fila para ${payload.to}: ${error.message}`);
+        }
+      }
+    }
+
+    sessionQueue.isProcessing = false;
+    this.logger.log(`[${phone}] Fila de mensagens processada.`);
+  }
+
+  private getRandomInterval(isReply: boolean): number {
+    const min = isReply ? this.MIN_REPLY_INTERVAL : this.MIN_BULK_INTERVAL;
+    const max = isReply ? this.MAX_REPLY_INTERVAL : this.MAX_BULK_INTERVAL;
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  // A função normalizePhoneNumber não é mais usada para envio, mas pode ser mantida para outros propósitos.
+  private normalizePhoneNumber(number: string): string {
+    const cleaned = number.replace(/\D/g, '');
+    if (cleaned.startsWith('55') && cleaned.length === 12) {
+      return `${cleaned.slice(0, 4)}9${cleaned.slice(4)}`;
+    }
+    return cleaned;
+  }
+
   async sendMessage(
     phone: string,
     to: string,
     text: string,
     appointmentId: number,
   ) {
-    const client = this.sessions.get(phone);
-    if (!client) throw new Error('Client not connected');
-    const formatted = to.replace('+', '') + '@c.us';
+    const sock = this.sessions.get(phone);
+    if (!sock || !sock.user) {
+      this.logger.error(`[${phone}] Tentativa de envio falhou: cliente não conectado.`);
+      throw new Error('Client not connected');
+    }
+
+    // Salva a pendência com o número "cru", a validação e formatação acontecerão na fila
+    const cleanedTo = to.replace(/\D/g, '');
+    const formattedPending = `${cleanedTo}@c.us`;
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 6 * 60 * 60 * 1000);
     const pending = this.pendingRepo.create({
       id: uuidv4(),
       appointmentId,
-      phone: formatted,
+      phone: formattedPending,
       createdAt: now,
       expiresAt,
     });
     await this.pendingRepo.save(pending);
-    return client.sendMessage(formatted, text);
+
+    // Esta é a mensagem inicial, enviada em massa, então isReply é false e a validação é necessária
+    await this.enqueueMessage(phone, { to: to, text, isReply: false, skipValidation: false });
   }
 
-  // ALTERAÇÃO: Tipagem da mensagem e chamada de envio
-  private async handleIncoming(phone: string, message: Message) {
-    if (!message.body || typeof message.body !== 'string') return;
-    this.logger.log(`[${phone}] Received from ${message.from}: ${message.body}`);
+  private async handleIncoming(phone: string, message: WAMessage) {
+    const messageContent = message.message?.conversation || message.message?.extendedTextMessage?.text;
+    const fromJid = message.key.remoteJid;
 
-    const phoneVariations = this.generatePhoneVariations(message.from);
+    if (!messageContent || !fromJid) return;
+    this.logger.log(`[${phone}] Recebido de ${fromJid}: ${messageContent}`);
+
+    const fromAsCus = fromJid.replace('@s.whatsapp.net', '@c.us');
+    const phoneVariations = this.generatePhoneVariations(fromAsCus);
 
     const pending = await this.pendingRepo.findOne({
-      where: {
-        phone: In(phoneVariations),
-        expiresAt: MoreThan(new Date()),
-      },
+      where: { phone: In(phoneVariations), expiresAt: MoreThan(new Date()) },
       order: { createdAt: 'DESC' },
     });
 
     if (!pending) return;
 
-    const normalizedText = this.normalize(message.body);
+    const normalizedText = this.normalize(messageContent);
 
     if (normalizedText === 'confirmar' || normalizedText === 'confirmado') {
-      return this.confirm(pending, phone, message.from);
+      return this.confirm(pending, phone, fromJid);
     }
-
     if (normalizedText === 'cancelar' || normalizedText === 'cancelado') {
-      return this.cancel(pending, phone, message.from);
+      return this.cancel(pending, phone, fromJid);
     }
-
-    await this.sessions
-      .get(phone)
-      ?.sendMessage( // ALTERADO: sendText -> sendMessage
-        message.from,
-        'Desculpe, não entendi. Por favor, responda apenas com a palavra *confirmar* ou *cancelar*.',
-      );
+    
+    await this.sendMessageSimple(
+      phone,
+      fromJid,
+      'Desculpe, não entendi. Por favor, responda apenas com a palavra *confirmar* ou *cancelar*.'
+    );
   }
 
   private async confirm(conf: any, phone: string, from: string) {
@@ -340,9 +419,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         ),
       );
     } catch (error) {
-       this.logger.error(`Falha ao atualizar bloco para CONFIRMADO para o appt ID ${conf.appointmentId}: ${error.message}`);
-       await this.sessions.get(phone)?.sendMessage(from, 'Ocorreu um erro ao processar sua confirmação. Por favor, tente novamente ou contate a clínica.');
-       return;
+      this.logger.error(`Falha ao atualizar bloco para CONFIRMADO para o appt ID ${conf.appointmentId}: ${error.message}`);
+      await this.sendMessageSimple(phone, from, 'Ocorreu um erro ao processar sua confirmação. Por favor, tente novamente ou contate a clínica.');
+      return;
     }
 
     try {
@@ -355,9 +434,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       const clinicPhone = details.clinic.phone;
       const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
       const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
-      const greeting = responsibleInfo 
-            ? `Olá, ${recipientName}! O agendamento de ${patientName} com ${professionalName} na clínica ${clinicName} está confirmado.`
-            : `Olá, ${recipientName}! Seu agendamento com ${professionalName} na clínica ${clinicName} está confirmado.`;
+      const greeting = responsibleInfo
+        ? `Olá, ${recipientName}! O agendamento de ${patientName} com ${professionalName} na clínica ${clinicName} está confirmado.`
+        : `Olá, ${recipientName}! Seu agendamento com ${professionalName} na clínica ${clinicName} está confirmado.`;
 
       const blockStartTime = new Date(details.blockStartTime);
       const blockEndTime = new Date(details.blockEndTime);
@@ -378,11 +457,10 @@ Por favor, chegue com alguns minutos de antecedência. Em caso de dúvidas ou se
 Até lá!
 ---
 _Esta é uma mensagem automática. Por favor, não responda._`;
-
-      await this.sessions.get(phone)?.sendMessage(from, confirmationMessage);
+      await this.sendMessageSimple(phone, from, confirmationMessage);
     } catch (error) {
       this.logger.error(`Erro ao enviar confirmação detalhada: ${error.message}`);
-      await this.sessions.get(phone)?.sendMessage(from, 'Seu agendamento foi confirmado com sucesso!');
+      await this.sendMessageSimple(phone, from, 'Seu agendamento foi confirmado com sucesso!');
     }
 
     await this.pendingRepo.delete({ id: conf.id });
@@ -400,7 +478,7 @@ _Esta é uma mensagem automática. Por favor, não responda._`;
       );
     } catch (error) {
       this.logger.error(`Falha ao atualizar bloco para CANCELADO para o appt ID ${conf.appointmentId}: ${error.message}`);
-      await this.sessions.get(phone)?.sendMessage(from, 'Ocorreu um erro ao processar seu cancelamento. Por favor, tente novamente ou contate a clínica.');
+      await this.sendMessageSimple(phone, from, 'Ocorreu um erro ao processar seu cancelamento. Por favor, tente novamente ou contate a clínica.');
       return;
     }
 
@@ -412,9 +490,9 @@ _Esta é uma mensagem automática. Por favor, não responda._`;
       const clinicPhone = details.clinic.phone;
       const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
       const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
-      const greeting = responsibleInfo 
-            ? `Olá, ${recipientName}. Conforme sua solicitação, o agendamento de ${patientName} com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`
-            : `Olá, ${recipientName}. Conforme sua solicitação, o agendamento com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`;
+      const greeting = responsibleInfo
+        ? `Olá, ${recipientName}. Conforme sua solicitação, o agendamento de ${patientName} com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`
+        : `Olá, ${recipientName}. Conforme sua solicitação, o agendamento com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`;
 
       const cancellationMessage = `❌ *Agendamento Cancelado*
 
@@ -426,30 +504,52 @@ Se desejar remarcar, por favor, entre em contato diretamente com a clínica.
 Esperamos vê-lo em breve.
 ---
 _Esta é uma mensagem automática._`;
-
-      await this.sessions.get(phone)?.sendMessage(from, cancellationMessage);
+      await this.sendMessageSimple(phone, from, cancellationMessage);
     } catch (error) {
       this.logger.error(`Erro ao enviar cancelamento detalhado: ${error.message}`);
       const fallbackMessage = 'Seu agendamento foi cancelado conforme solicitado. Caso deseje remarcar, por favor, entre em contato diretamente com a clínica.';
-      await this.sessions.get(phone)?.sendMessage(from, fallbackMessage);
+      await this.sendMessageSimple(phone, from, fallbackMessage);
     }
 
     await this.pendingRepo.delete({ id: conf.id });
     await this.checkAndNotifyNextPendingAppointment(phone, from);
   }
 
-  private async getUserId(id: number) {
-    const response = await firstValueFrom(
-      this.httpService.get(
-        `http://localhost:3001/appointment/find/user/appointment/${id}`,
-        { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
-      ),
-    );
-    this.logger.log(`Response from API: ${response.status} - ${response.statusText}`);
-    return response;
+  private async sendMessageSimple(phone: string, to: string, text: string) {
+    // Como 'to' aqui é um JID de uma mensagem recebida, ele já é válido.
+    await this.enqueueMessage(phone, { to: to, text, isReply: true, skipValidation: true });
   }
 
-  private normalize(text: string) {
+  private async notifyFrontendStatus(phone: string) {
+    try {
+      await firstValueFrom(
+        this.httpService.post(
+          'http://localhost:3001/whatsapp/status-update',
+          { phoneNumber: phone },
+          { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
+        ),
+      );
+    } catch (e) {
+      this.logger.error(`[${phone}] Falha ao notificar o frontend sobre desconexão: ${e.message}`);
+    }
+  }
+
+  private gracefulShutdown() {
+    this.logger.warn('Desligamento gracioso iniciado...');
+    this.onModuleDestroy()
+      .then(() => process.exit(0))
+      .catch((err) => {
+        this.logger.error(`Erro no desligamento gracioso: ${err.message}`);
+        process.exit(1);
+      });
+  }
+
+  async getStatus(phone: string): Promise<string> {
+    const conn = await this.connRepo.findOne({ where: { phoneNumber: phone } });
+    return conn?.status || 'not-found';
+  }
+
+  private normalize(text: string): string {
     return text
       .toLowerCase()
       .normalize('NFD')
@@ -473,17 +573,27 @@ _Esta é uma mensagem automática._`;
       throw new Error('Não foi possível obter os detalhes do agendamento.');
     }
   }
-  
+
   private generatePhoneVariations(phone: string): string[] {
     const normalizedPhone = phone.replace(/\D/g, '');
     if (normalizedPhone.length < 11) return [phone, `${phone}@c.us`];
+
     const withoutNine = normalizedPhone.replace(/^(\d{4})(9?)(\d{8})$/, '$1$3');
     const withNine = normalizedPhone.replace(/^(\d{4})(\d{8})$/, '$19$2');
-    return [`${withoutNine}@c.us`, `${withNine}@c.us`, withoutNine, withNine];
+
+    return [
+      `${withoutNine}@c.us`,
+      `${withNine}@c.us`,
+      withoutNine,
+      withNine,
+      phone,
+    ];
   }
 
   private async checkAndNotifyNextPendingAppointment(phone: string, from: string) {
-    const phoneVariations = this.generatePhoneVariations(from);
+    const fromAsCus = from.replace('@s.whatsapp.net', '@c.us');
+    const phoneVariations = this.generatePhoneVariations(fromAsCus);
+
     const nextPending = await this.pendingRepo.findOne({
       where: { phone: In(phoneVariations), expiresAt: MoreThan(new Date()) },
       order: { createdAt: 'ASC' },
@@ -495,13 +605,13 @@ _Esta é uma mensagem automática._`;
         const patientName = details.patient.personalInfo.name;
         const professionalName = details.professional.user.name;
         const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
-        const appointmentTime = new Date(details.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        const appointmentTime = new Date(details.blockStartTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
         const followUpMessage = `Obrigado, ${patientName}! Notamos que você também tem um agendamento com o(a) profissional ${professionalName} no dia ${appointmentDate} às ${appointmentTime} que ainda não foi respondido.
 
 Deseja também *confirmar* ou *cancelar* este horário?`;
 
-        await this.sessions.get(phone)?.sendMessage(from, followUpMessage);
+        await this.sendMessageSimple(phone, from, followUpMessage);
         this.logger.log(`Enviada mensagem de acompanhamento para o agendamento ${nextPending.appointmentId} para o número ${from}.`);
       } catch (error) {
         this.logger.error(`Falha ao notificar próxima pendência para ${from}: ${error.message}`);
