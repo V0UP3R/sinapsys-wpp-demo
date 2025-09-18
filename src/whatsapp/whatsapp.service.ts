@@ -395,10 +395,37 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     const normalizedText = this.normalize(messageContent);
 
-    if (normalizedText === 'confirmar' || normalizedText === 'confirmado') {
+    const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
+    const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];
+
+    const threshold = 2; 
+
+    // Função auxiliar para encontrar a menor distância em uma lista de palavras
+    const getMinDistance = (text: string, keywords: string[]): number => {
+      return Math.min(
+        ...keywords.map(kw => {
+            const dist = this.levenshtein(text, kw);
+            if (kw.length <= 3 && dist > 1) return 99; 
+            return dist;
+        })
+      );
+    };
+
+    // Calculo da distância mínima para cada intenção
+    const confirmDistance = getMinDistance(normalizedText, confirmKeywords);
+    const cancelDistance = getMinDistance(normalizedText, cancelKeywords);
+
+    this.logger.log(`[${phone}] Distâncias para "${normalizedText}": Confirmar=${confirmDistance}, Cancelar=${cancelDistance}`);
+
+    // Intenção de CONFIRMAR é clara e está dentro do limite
+    if (confirmDistance <= threshold && confirmDistance < cancelDistance) {
+      this.logger.log(`[${phone}] Intenção 'Confirmar' detectada para "${normalizedText}"`);
       return this.confirm(pending, phone, fromJid);
     }
-    if (normalizedText === 'cancelar' || normalizedText === 'cancelado') {
+
+    // Intenção de CANCELAR é clara e está dentro do limite
+    if (cancelDistance <= threshold && cancelDistance < confirmDistance) {
+      this.logger.log(`[${phone}] Intenção 'Cancelar' detectada para "${normalizedText}"`);
       return this.cancel(pending, phone, fromJid);
     }
     
@@ -617,5 +644,41 @@ Deseja também *confirmar* ou *cancelar* este horário?`;
         this.logger.error(`Falha ao notificar próxima pendência para ${from}: ${error.message}`);
       }
     }
+  }
+  
+  /**
+   * Calcula a distância Levenshtein entre duas strings (a e b).
+   * Mede o número de edições (inserções, deleções, substituições)
+   * para transformar 'a' em 'b'.
+  */
+  private levenshtein(a: string, b: string): number {
+    const matrix = [];
+
+    // Incrementa ao longo da primeira coluna de todas as linhas
+    for (let i = 0; i <= b.length; i++) {
+      matrix[i] = [i];
+    }
+
+    // Incrementa ao longo da primeira linha de todas as colunas
+    for (let j = 0; j <= a.length; j++) {
+      matrix[0][j] = j;
+    }
+
+    // Preenche o resto da matriz
+    for (let i = 1; i <= b.length; i++) {
+      for (let j = 1; j <= a.length; j++) {
+        if (b.charAt(i - 1) == a.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1, // substituição
+            matrix[i][j - 1] + 1,     // inserção
+            matrix[i - 1][j] + 1,     // deleção
+          );
+        }
+      }
+    }
+
+    return matrix[b.length][a.length];
   }
 }
