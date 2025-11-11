@@ -106,6 +106,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               auth: state,
               browser: Browsers.macOS('Desktop'),
               logger: pino({ level: 'silent' }) as any,
+              version: [2, 3000, 1028401180] as [number, number, number],
             });
     
             let promiseResolved = false;
@@ -163,10 +164,33 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     
               if (connection === 'close') {
                 const statusCode = (lastDisconnect.error as Boom)?.output?.statusCode;
+                const reason = (lastDisconnect?.error as any)?.data?.reason;
                 
                 this.connectingSessions.delete(phone);
                 this.sessions.delete(phone);
                 await this.connRepo.update({ phoneNumber: phone }, { status: 'disconnected' });
+
+                if (statusCode === 405 || reason === '405') {
+                  this.logger.warn(`[${phone}] Erro 405 detectado. Limpando sessão completamente...`);
+
+                  if (fs.existsSync(sessionPath)) {
+                    fs.rmSync(sessionPath, { recursive: true, force: true });
+                  }
+                  
+                  setTimeout(() => {
+                    this.logger.log(`[${phone}] Tentando reconectar após erro 405...`);
+                    this.connect(phone).catch(err => {
+                      this.logger.error(`[${phone}] Falha na RECONEXÃO automática após 405: ${err.message}`);
+                    });
+                  }, 5000);
+
+                  if (!promiseResolved) {
+                    promiseResolved = true;
+                    clearTimeout(timeout);
+                    reject(new Error('Erro 405: Sessão corrompida. Reconexão automática iniciada.'));
+                  }
+                  return;
+                }
     
                 if (statusCode !== DisconnectReason.loggedOut) {
                   this.logger.warn(`[${phone}] Conexão fechada (código: ${statusCode}), tentando reconectar em 5 segundos...`);
@@ -181,12 +205,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
                 if (!promiseResolved) {
                   promiseResolved = true;
                   clearTimeout(timeout);
-                  reject(lastDisconnect.error || new Error(`Connection closed with status code: ${statusCode}`));
+                  reject(lastDisconnect?.error || new Error(`Connection closed with status code: ${statusCode}`));
                 }
               }
             });
           } catch (err) {
             this.connectingSessions.delete(phone);
+            this.logger.error(`[${phone}] Erro ao conectar: ${err.message}`);
             reject(err);
           }
     });
