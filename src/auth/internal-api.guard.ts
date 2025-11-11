@@ -25,7 +25,6 @@ export class InternalApiGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
-
     // const accessToken = this.extractToken(request);
     // if (!accessToken) throw new UnauthorizedException('Access token ausente');
 
