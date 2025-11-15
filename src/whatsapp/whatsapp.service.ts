@@ -338,7 +338,18 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           }
 
           this.logger.log(`[Queue] Enviando mensagem para ${finalJid} a partir da fila.`);
-          await sock.sendMessage(finalJid, { text: payload.text });
+          try {
+            await sock.sendMessage(finalJid, { text: payload.text });
+          } catch (sendError) {
+            // Verifica se o erro é de sessão (Bad MAC) e tenta reenviar uma vez.
+            if (sendError.message.includes('Bad MAC')) {
+              this.logger.warn(`[Queue] Erro de sessão (Bad MAC) para ${finalJid}. Tentando reenviar em 3 segundos...`);
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              await sock.sendMessage(finalJid, { text: payload.text }); // Segunda tentativa
+            } else {
+              throw sendError; // Se for outro erro, propaga.
+            }
+          }
 
           const interval = this.getRandomInterval(payload.isReply);
           const type = payload.isReply ? 'resposta' : 'massa';
