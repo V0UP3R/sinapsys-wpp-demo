@@ -37,6 +37,7 @@ interface MessagePayload {
 export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private sessions = new Map<string, WASocket>();
   private connectingSessions = new Set<string>();
+  private syncedSessions = new Set<string>(); // Rastreia sessões que completaram sincronização
   private readonly logger = new Logger(WhatsappService.name);
   private readonly SESSIONS_DIR = path.join(process.cwd(), '.baileys_auth');
 
@@ -53,6 +54,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   // Constantes para o intervalo de envio EM MASSA (bom cidadão)
   private readonly MIN_BULK_INTERVAL = 30000; // 30 segundos
   private readonly MAX_BULK_INTERVAL = 60000; // 1 minuto
+
+  // Limite máximo de mensagens na fila por sessão
+  private readonly MAX_QUEUE_SIZE = 100;
+
+  // Timeout para chamadas HTTP (em ms)
+  private readonly HTTP_TIMEOUT = 30000;
 
   constructor(
     private readonly httpService: HttpService,
@@ -86,7 +93,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
   private getSessionPath(phone: string): string {
-    return path.join(this.SESSIONS_DIR, `session-${phone}`);
+    // Sanitiza o número para evitar path traversal
+    const sanitizedPhone = phone.replace(/[^0-9]/g, '');
+    if (!sanitizedPhone || sanitizedPhone.length < 8) {
+      throw new Error('Número de telefone inválido');
+    }
+    return path.join(this.SESSIONS_DIR, `session-${sanitizedPhone}`);
   }
 
   async connect(phone: string): Promise<string | null> {
@@ -125,6 +137,14 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               const msg = m.messages[0];
               if (!msg.message || msg.key.fromMe) return;
               await this.handleIncoming(phone, msg);
+            });
+
+            // Evento que indica que a sincronização inicial foi concluída
+            sock.ev.on('messaging-history.set', ({ isLatest }) => {
+              if (isLatest) {
+                this.logger.log(`[${phone}] Sincronização de histórico concluída.`);
+                this.syncedSessions.add(phone);
+              }
             });
     
             sock.ev.on('connection.update', async (update) => {
@@ -165,9 +185,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               if (connection === 'close') {
                 const statusCode = (lastDisconnect.error as Boom)?.output?.statusCode;
                 const reason = (lastDisconnect?.error as any)?.data?.reason;
-                
+
                 this.connectingSessions.delete(phone);
                 this.sessions.delete(phone);
+                this.syncedSessions.delete(phone); // Limpa estado de sincronização
                 await this.connRepo.update({ phoneNumber: phone }, { status: 'disconnected' });
 
                 if (statusCode === 405 || reason === '405') {
@@ -224,7 +245,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     }
     this.sessions.delete(phone);
     this.messageQueues.delete(phone);
-    
+    this.syncedSessions.delete(phone); // Limpa o estado de sincronização
+
     const sessionPath = this.getSessionPath(phone);
     if (fs.existsSync(sessionPath)) {
       fs.rmSync(sessionPath, { recursive: true, force: true });
@@ -236,10 +258,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`[${phone}] Sessão desconectada e arquivos limpos.`);
   }
 
-  private async enqueueMessage(phone: string, payload: MessagePayload) {
+  private async enqueueMessage(phone: string, payload: MessagePayload): Promise<boolean> {
     if (!this.sessions.has(phone)) {
       this.logger.error(`[${phone}] Tentativa de enfileirar mensagem falhou: cliente não conectado.`);
-      return;
+      return false;
     }
 
     if (!this.messageQueues.has(phone)) {
@@ -247,12 +269,20 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     }
 
     const sessionQueue = this.messageQueues.get(phone);
+
+    // Verifica limite de tamanho da fila
+    if (sessionQueue.queue.length >= this.MAX_QUEUE_SIZE) {
+      this.logger.error(`[${phone}] Fila de mensagens cheia (${this.MAX_QUEUE_SIZE}). Mensagem descartada.`);
+      return false;
+    }
+
     sessionQueue.queue.push(payload);
     this.logger.log(`[${phone}] Mensagem para ${payload.to} adicionada à fila. Tamanho atual: ${sessionQueue.queue.length}`);
 
     if (!sessionQueue.isProcessing) {
       this.processMessageQueue(phone);
     }
+    return true;
   }
 
   // NOVO: Método para validar o número de telefone antes de enviar
@@ -309,6 +339,67 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Aguarda até que a sessão esteja sincronizada ou timeout
+   */
+  private async waitForSync(phone: string, timeoutMs: number = 30000): Promise<boolean> {
+    const startTime = Date.now();
+    while (!this.syncedSessions.has(phone)) {
+      if (Date.now() - startTime > timeoutMs) {
+        this.logger.warn(`[${phone}] Timeout aguardando sincronização. Prosseguindo mesmo assim.`);
+        return false;
+      }
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    return true;
+  }
+
+  /**
+   * Envia mensagem com retry e verificação de entrega
+   */
+  private async sendMessageWithRetry(
+    phone: string,
+    jid: string,
+    text: string,
+    maxRetries: number = 3
+  ): Promise<boolean> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      // Verifica se a sessão ainda está ativa antes de cada tentativa
+      const sock = this.sessions.get(phone);
+      if (!sock) {
+        this.logger.error(`[SendRetry] Sessão ${phone} não está mais ativa. Abortando.`);
+        return false;
+      }
+
+      try {
+        // Aguarda um pouco antes de cada tentativa (exceto a primeira)
+        if (attempt > 1) {
+          const delay = attempt * 2000; // 2s, 4s, 6s
+          this.logger.log(`[SendRetry] Tentativa ${attempt}/${maxRetries} em ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+
+        const result = await sock.sendMessage(jid, { text });
+
+        // Verifica se a mensagem foi enviada com sucesso
+        if (result?.key?.id) {
+          this.logger.log(`[SendRetry] Mensagem enviada com sucesso (ID: ${result.key.id})`);
+          return true;
+        }
+
+        this.logger.warn(`[SendRetry] Resultado inesperado na tentativa ${attempt}: ${JSON.stringify(result)}`);
+      } catch (error) {
+        this.logger.error(`[SendRetry] Erro na tentativa ${attempt}/${maxRetries}: ${error.message}`);
+
+        // Se for erro de Bad MAC, aguarda mais tempo
+        if (error.message?.includes('Bad MAC')) {
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+      }
+    }
+    return false;
+  }
+
   private async processMessageQueue(phone: string) {
     const sessionQueue = this.messageQueues.get(phone);
     if (!sessionQueue || sessionQueue.isProcessing) {
@@ -318,47 +409,52 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     sessionQueue.isProcessing = true;
     this.logger.log(`[${phone}] Iniciando processamento da fila de mensagens.`);
 
+    // Aguarda a sincronização antes de processar mensagens em massa
+    if (!this.syncedSessions.has(phone)) {
+      this.logger.log(`[${phone}] Aguardando sincronização da sessão antes de enviar mensagens...`);
+      await this.waitForSync(phone, 30000);
+    }
+
     while (sessionQueue.queue.length > 0) {
-      const payload = sessionQueue.queue.shift();
+      // Verifica se a sessão ainda existe antes de processar cada mensagem
       const sock = this.sessions.get(phone);
+      if (!sock) {
+        this.logger.warn(`[${phone}] Sessão desconectada durante processamento da fila. Abortando.`);
+        break;
+      }
 
-      if (sock && payload) {
-        try {
-          let finalJid: string | null = null;
+      const payload = sessionQueue.queue.shift();
+      if (!payload) continue;
 
-          if (payload.skipValidation) {
-            finalJid = payload.to;
-          } else {
-            finalJid = await this.validatePhoneNumber(sock, payload.to);
-          }
-          
-          if (!finalJid) {
-            this.logger.error(`[Queue] Número ${payload.to} inválido ou não encontrado no WhatsApp. Mensagem descartada.`);
-            continue; // Pula para a próxima mensagem da fila
-          }
+      try {
+        let finalJid: string | null = null;
 
-          this.logger.log(`[Queue] Enviando mensagem para ${finalJid} a partir da fila.`);
-          try {
-            await sock.sendMessage(finalJid, { text: payload.text });
-          } catch (sendError) {
-            // Verifica se o erro é de sessão (Bad MAC) e tenta reenviar uma vez.
-            if (sendError.message.includes('Bad MAC')) {
-              this.logger.warn(`[Queue] Erro de sessão (Bad MAC) para ${finalJid}. Tentando reenviar em 3 segundos...`);
-              await new Promise(resolve => setTimeout(resolve, 3000));
-              await sock.sendMessage(finalJid, { text: payload.text }); // Segunda tentativa
-            } else {
-              throw sendError; // Se for outro erro, propaga.
-            }
-          }
-
-          const interval = this.getRandomInterval(payload.isReply);
-          const type = payload.isReply ? 'resposta' : 'massa';
-          this.logger.log(`[Queue] Aguardando ${interval}ms para a próxima mensagem (tipo: ${type}).`);
-          await new Promise(resolve => setTimeout(resolve, interval));
-
-        } catch (error) {
-          this.logger.error(`[Queue] Erro ao enviar mensagem da fila para ${payload.to}: ${error.message}`);
+        if (payload.skipValidation) {
+          finalJid = payload.to;
+        } else {
+          finalJid = await this.validatePhoneNumber(sock, payload.to);
         }
+
+        if (!finalJid) {
+          this.logger.error(`[Queue] Número ${payload.to} inválido ou não encontrado no WhatsApp. Mensagem descartada.`);
+          continue;
+        }
+
+        this.logger.log(`[Queue] Enviando mensagem para ${finalJid} a partir da fila.`);
+
+        const success = await this.sendMessageWithRetry(phone, finalJid, payload.text, 3);
+
+        if (!success) {
+          this.logger.error(`[Queue] Falha ao enviar mensagem para ${finalJid} após todas as tentativas.`);
+        }
+
+        const interval = this.getRandomInterval(payload.isReply);
+        const type = payload.isReply ? 'resposta' : 'massa';
+        this.logger.log(`[Queue] Aguardando ${interval}ms para a próxima mensagem (tipo: ${type}).`);
+        await new Promise(resolve => setTimeout(resolve, interval));
+
+      } catch (error) {
+        this.logger.error(`[Queue] Erro ao enviar mensagem da fila para ${payload.to}: ${error.message}`);
       }
     }
 
@@ -478,7 +574,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         this.httpService.patch(
           `http://localhost:3001/appointment/block/${conf.appointmentId}`,
           { status: 'Confirmado' },
-          { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
+          {
+            headers: { 'x-internal-api-secret': process.env.API_SECRET },
+            timeout: this.HTTP_TIMEOUT,
+          },
         ),
       );
     } catch (error) {
@@ -536,7 +635,10 @@ _Esta é uma mensagem automática. Por favor, não responda._`;
         this.httpService.patch(
           `http://localhost:3001/appointment/block/${conf.appointmentId}`,
           { status: 'Cancelado', reasonLack: 'Cancelado pelo WhatsApp' },
-          { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
+          {
+            headers: { 'x-internal-api-secret': process.env.API_SECRET },
+            timeout: this.HTTP_TIMEOUT,
+          },
         ),
       );
     } catch (error) {
@@ -589,7 +691,10 @@ _Esta é uma mensagem automática._`;
         this.httpService.post(
           'http://localhost:3001/whatsapp/status-update',
           { phoneNumber: phone },
-          { headers: { 'x-internal-api-secret': process.env.API_SECRET } },
+          {
+            headers: { 'x-internal-api-secret': process.env.API_SECRET },
+            timeout: this.HTTP_TIMEOUT,
+          },
         ),
       );
     } catch (e) {
@@ -628,6 +733,7 @@ _Esta é uma mensagem automática._`;
       const response = await firstValueFrom(
         this.httpService.get(endpoint, {
           headers: { 'x-internal-api-secret': process.env.API_SECRET },
+          timeout: this.HTTP_TIMEOUT,
         }),
       );
       return response.data;
