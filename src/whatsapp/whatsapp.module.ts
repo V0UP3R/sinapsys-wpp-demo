@@ -5,16 +5,18 @@ import { HttpModule } from '@nestjs/axios';
 import { WhatsappService } from './whatsapp.service';
 import { PendingConfirmation } from '../message/entities/message.entity';
 import { WhatsappConnection } from './entities/whatsapp-connection.entity';
+import { RedisModule } from '../redis/redis.module';
 
 @Module({
   imports: [
-    HttpModule,                                      
+    HttpModule,
     TypeOrmModule.forFeature([
       PendingConfirmation,
-      WhatsappConnection,                           
+      WhatsappConnection,
     ]),
+    RedisModule,
   ],
   providers: [WhatsappService],
   exports: [WhatsappService],
 })
-export class WhatsappModule {}
+export class WhatsappModule { }

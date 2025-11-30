@@ -21,9 +21,12 @@ import makeWASocket, {
   useMultiFileAuthState,
   WAMessage,
   WASocket,
+  proto,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
+import { RedisService } from '../redis/redis.service';
+import { makeRedisStore } from './baileys-redis-store';
 
 // Interface para a carga útil da mensagem na fila
 interface MessagePayload {
@@ -67,6 +70,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     private readonly pendingRepo: Repository<PendingConfirmation>,
     @InjectRepository(WhatsappConnection)
     private readonly connRepo: Repository<WhatsappConnection>,
+    private readonly redisService: RedisService,
   ) {
     if (!fs.existsSync(this.SESSIONS_DIR)) {
       fs.mkdirSync(this.SESSIONS_DIR, { recursive: true });
@@ -75,6 +79,41 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       this.logger.debug('Modo de desenvolvimento - Controles especiais ativados');
       process.on('SIGINT', () => this.gracefulShutdown());
     }
+
+    // Override console methods to suppress specific libsignal/baileys logs
+    const originalConsoleError = console.error;
+    const originalConsoleLog = console.log;
+    const originalConsoleWarn = console.warn;
+
+    const shouldSuppress = (args: any[]) => {
+      const msg = args.join(' ');
+      const lowerMsg = msg.toLowerCase();
+      return (
+        lowerMsg.includes('bad mac') ||
+        lowerMsg.includes('no session found') ||
+        lowerMsg.includes('failed to decrypt') ||
+        lowerMsg.includes('session error') ||
+        lowerMsg.includes('no matching sessions found') ||
+        lowerMsg.includes('sessionentry') ||
+        lowerMsg.includes('closing session') ||
+        lowerMsg.includes('closing open session')
+      );
+    };
+
+    console.error = (...args) => {
+      if (shouldSuppress(args)) return;
+      originalConsoleError.apply(console, args);
+    };
+
+    console.log = (...args) => {
+      if (shouldSuppress(args)) return;
+      originalConsoleLog.apply(console, args);
+    };
+
+    console.warn = (...args) => {
+      if (shouldSuppress(args)) return;
+      originalConsoleWarn.apply(console, args);
+    };
   }
 
   async onModuleInit() {
@@ -103,138 +142,164 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   async connect(phone: string): Promise<string | null> {
     if (this.sessions.has(phone) || this.connectingSessions.has(phone)) {
-        this.logger.warn(`[${phone}] Conexão já estabelecida ou em progresso.`);
-        return null;
+      this.logger.warn(`[${phone}] Conexão já estabelecida ou em progresso.`);
+      return null;
     }
 
     this.connectingSessions.add(phone);
     const sessionPath = this.getSessionPath(phone);
 
     return new Promise(async (resolve, reject) => {
-        try {
-            const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-    
-            const sock = makeWASocket({
-              auth: state,
-              browser: Browsers.macOS('Desktop'),
-              logger: pino({ level: 'silent' }) as any,
-              version: [2, 3000, 1028401180] as [number, number, number],
-            });
-    
-            let promiseResolved = false;
-    
-            const timeout = setTimeout(() => {
+      try {
+        const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+
+        const store = makeRedisStore({
+          redis: this.redisService.client,
+          logger: this.logger,
+          prefix: `wa:${phone}:`,
+        });
+
+        const sock = makeWASocket({
+          auth: state,
+          browser: Browsers.macOS('Desktop'),
+          logger: pino({ level: 'silent' }) as any,
+          version: [2, 3000, 1028401180] as [number, number, number],
+          getMessage: async (key) => {
+            if (store) {
+              try {
+                const msg = await store.loadMessage(key.remoteJid, key.id);
+                return msg?.message || undefined;
+              } catch (error) {
+                return undefined;
+              }
+            }
+            return undefined;
+          },
+          cachedGroupMetadata: async (jid) => {
+            try {
+              const metadata = await store.fetchGroupMetadata(jid);
+              if (metadata) {
+                return metadata;
+              }
+            } catch (error) { }
+            return null;
+          }
+        });
+
+        store.bind(sock.ev);
+
+        let promiseResolved = false;
+
+        const timeout = setTimeout(() => {
+          if (!promiseResolved) {
+            promiseResolved = true;
+            this.connectingSessions.delete(phone);
+            reject(new Error(`[${phone}] Tempo esgotado para conectar.`));
+          }
+        }, 60000); // 60 segundos de timeout
+
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('messages.upsert', async (m) => {
+          const msg = m.messages[0];
+          if (!msg.message || msg.key.fromMe) return;
+          await this.handleIncoming(phone, msg);
+        });
+        sock.ev.on('messaging-history.set', ({ isLatest }) => {
+          if (isLatest) {
+            this.logger.log(`[${phone}] Sincronização de histórico concluída.`);
+            this.syncedSessions.add(phone);
+          }
+        });
+
+        sock.ev.on('connection.update', async (update) => {
+          const { connection, lastDisconnect, qr } = update;
+
+          if (qr) {
+            this.logger.log(`[${phone}] QR Code recebido.`);
+            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
+
+            let conn = await this.connRepo.findOne({ where: { phoneNumber: phone } });
+            if (!conn) {
+              conn = this.connRepo.create({ phoneNumber: phone });
+              await this.connRepo.save(conn);
+            }
+            await this.connRepo.update({ phoneNumber: phone }, { qrCodeUrl: qrUrl });
+
+            if (!promiseResolved) {
+              promiseResolved = true;
+              clearTimeout(timeout);
+              resolve(qrUrl);
+            }
+          }
+
+          if (connection === 'open') {
+            this.logger.log(`[${phone}] Conexão estabelecida com sucesso!`);
+            this.sessions.set(phone, sock);
+            this.connectingSessions.delete(phone);
+            await this.connRepo.update({ phoneNumber: phone }, { status: 'connected', qrCodeUrl: null });
+            await this.notifyFrontendStatus(phone);
+
+            if (!promiseResolved) {
+              promiseResolved = true;
+              clearTimeout(timeout);
+              resolve(null); // Conectado sem QR code (restauração de sessão)
+            }
+          }
+
+          if (connection === 'close') {
+            const statusCode = (lastDisconnect.error as Boom)?.output?.statusCode;
+            const reason = (lastDisconnect?.error as any)?.data?.reason;
+
+            this.connectingSessions.delete(phone);
+            this.sessions.delete(phone);
+            this.syncedSessions.delete(phone); // Limpa estado de sincronização
+            await this.connRepo.update({ phoneNumber: phone }, { status: 'disconnected' });
+
+            if (statusCode === 405 || reason === '405') {
+              this.logger.warn(`[${phone}] Erro 405 detectado. Limpando sessão completamente...`);
+
+              if (fs.existsSync(sessionPath)) {
+                fs.rmSync(sessionPath, { recursive: true, force: true });
+              }
+
+              setTimeout(() => {
+                this.logger.log(`[${phone}] Tentando reconectar após erro 405...`);
+                this.connect(phone).catch(err => {
+                  this.logger.error(`[${phone}] Falha na RECONEXÃO automática após 405: ${err.message}`);
+                });
+              }, 5000);
+
               if (!promiseResolved) {
                 promiseResolved = true;
-                this.connectingSessions.delete(phone);
-                reject(new Error(`[${phone}] Tempo esgotado para conectar.`));
+                clearTimeout(timeout);
+                reject(new Error('Erro 405: Sessão corrompida. Reconexão automática iniciada.'));
               }
-            }, 60000); // 60 segundos de timeout
-    
-            sock.ev.on('creds.update', saveCreds);
-    
-            sock.ev.on('messages.upsert', async (m) => {
-              const msg = m.messages[0];
-              if (!msg.message || msg.key.fromMe) return;
-              await this.handleIncoming(phone, msg);
-            });
+              return;
+            }
 
-            // Evento que indica que a sincronização inicial foi concluída
-            sock.ev.on('messaging-history.set', ({ isLatest }) => {
-              if (isLatest) {
-                this.logger.log(`[${phone}] Sincronização de histórico concluída.`);
-                this.syncedSessions.add(phone);
+            if (statusCode !== DisconnectReason.loggedOut) {
+              this.logger.warn(`[${phone}] Conexão fechada (código: ${statusCode}), tentando reconectar em 5 segundos...`);
+              setTimeout(() => this.connect(phone), 5000);
+            } else {
+              this.logger.warn(`[${phone}] Desconectado (logged out). Removendo sessão permanentemente.`);
+              if (fs.existsSync(sessionPath)) {
+                fs.rmSync(sessionPath, { recursive: true, force: true });
               }
-            });
-    
-            sock.ev.on('connection.update', async (update) => {
-              const { connection, lastDisconnect, qr } = update;
-    
-              if (qr) {
-                this.logger.log(`[${phone}] QR Code recebido.`);
-                const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
-    
-                let conn = await this.connRepo.findOne({ where: { phoneNumber: phone } });
-                if (!conn) {
-                  conn = this.connRepo.create({ phoneNumber: phone });
-                  await this.connRepo.save(conn);
-                }
-                await this.connRepo.update({ phoneNumber: phone }, { qrCodeUrl: qrUrl });
-    
-                if (!promiseResolved) {
-                  promiseResolved = true;
-                  clearTimeout(timeout);
-                  resolve(qrUrl);
-                }
-              }
-    
-              if (connection === 'open') {
-                this.logger.log(`[${phone}] Conexão estabelecida com sucesso!`);
-                this.sessions.set(phone, sock);
-                this.connectingSessions.delete(phone);
-                await this.connRepo.update({ phoneNumber: phone }, { status: 'connected', qrCodeUrl: null });
-                await this.notifyFrontendStatus(phone);
-    
-                if (!promiseResolved) {
-                  promiseResolved = true;
-                  clearTimeout(timeout);
-                  resolve(null); // Conectado sem QR code (restauração de sessão)
-                }
-              }
-    
-              if (connection === 'close') {
-                const statusCode = (lastDisconnect.error as Boom)?.output?.statusCode;
-                const reason = (lastDisconnect?.error as any)?.data?.reason;
+            }
 
-                this.connectingSessions.delete(phone);
-                this.sessions.delete(phone);
-                this.syncedSessions.delete(phone); // Limpa estado de sincronização
-                await this.connRepo.update({ phoneNumber: phone }, { status: 'disconnected' });
-
-                if (statusCode === 405 || reason === '405') {
-                  this.logger.warn(`[${phone}] Erro 405 detectado. Limpando sessão completamente...`);
-
-                  if (fs.existsSync(sessionPath)) {
-                    fs.rmSync(sessionPath, { recursive: true, force: true });
-                  }
-                  
-                  setTimeout(() => {
-                    this.logger.log(`[${phone}] Tentando reconectar após erro 405...`);
-                    this.connect(phone).catch(err => {
-                      this.logger.error(`[${phone}] Falha na RECONEXÃO automática após 405: ${err.message}`);
-                    });
-                  }, 5000);
-
-                  if (!promiseResolved) {
-                    promiseResolved = true;
-                    clearTimeout(timeout);
-                    reject(new Error('Erro 405: Sessão corrompida. Reconexão automática iniciada.'));
-                  }
-                  return;
-                }
-    
-                if (statusCode !== DisconnectReason.loggedOut) {
-                  this.logger.warn(`[${phone}] Conexão fechada (código: ${statusCode}), tentando reconectar em 5 segundos...`);
-                  setTimeout(() => this.connect(phone), 5000);
-                } else {
-                  this.logger.warn(`[${phone}] Desconectado (logged out). Removendo sessão permanentemente.`);
-                  if (fs.existsSync(sessionPath)) {
-                    fs.rmSync(sessionPath, { recursive: true, force: true });
-                  }
-                }
-                
-                if (!promiseResolved) {
-                  promiseResolved = true;
-                  clearTimeout(timeout);
-                  reject(lastDisconnect?.error || new Error(`Connection closed with status code: ${statusCode}`));
-                }
-              }
-            });
-          } catch (err) {
-            this.connectingSessions.delete(phone);
-            this.logger.error(`[${phone}] Erro ao conectar: ${err.message}`);
-            reject(err);
+            if (!promiseResolved) {
+              promiseResolved = true;
+              clearTimeout(timeout);
+              reject(lastDisconnect?.error || new Error(`Connection closed with status code: ${statusCode}`));
+            }
           }
+        });
+      } catch (err) {
+        this.connectingSessions.delete(phone);
+        this.logger.error(`[${phone}] Erro ao conectar: ${err.message}`);
+        reject(err);
+      }
     });
   }
 
@@ -258,7 +323,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`[${phone}] Sessão desconectada e arquivos limpos.`);
   }
 
-  private async enqueueMessage(phone: string, payload: MessagePayload): Promise<boolean> {
+  private async enqueueMessage(phone: string, payload: MessagePayload) {
     if (!this.sessions.has(phone)) {
       this.logger.error(`[${phone}] Tentativa de enfileirar mensagem falhou: cliente não conectado.`);
       return false;
@@ -288,54 +353,54 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   // NOVO: Método para validar o número de telefone antes de enviar
   private async validatePhoneNumber(sock: WASocket, number: string): Promise<string | null> {
     try {
-        const cleaned = number.replace(/\D/g, '');
-        
-        // Lógica específica para números do Brasil para tratar o 9º dígito
-        if (cleaned.startsWith('55') && cleaned.length >= 10) {
-            const ddd = cleaned.substring(2, 4);
-            const body = cleaned.substring(4);
+      const cleaned = number.replace(/\D/g, '');
 
-            let withNine = '';
-            let withoutNine = '';
+      // Lógica específica para números do Brasil para tratar o 9º dígito
+      if (cleaned.startsWith('55') && cleaned.length >= 10) {
+        const ddd = cleaned.substring(2, 4);
+        const body = cleaned.substring(4);
 
-            if (body.length === 9 && body.startsWith('9')) { // Formato: 55XX9XXXXXXXX
-                withNine = cleaned;
-                withoutNine = `55${ddd}${body.substring(1)}`;
-            } else if (body.length === 8) { // Formato: 55XX_XXXXXXXX
-                withNine = `55${ddd}9${body}`;
-                withoutNine = cleaned;
-            } else {
-                // Não é um formato de celular padrão, verifica o número como está
-                const [result] = await sock.onWhatsApp(cleaned);
-                return result?.exists ? result.jid : null;
-            }
-            
-            // Verifica a versão com '9' primeiro, que é a mais comum
-            const [resultWithNine] = await sock.onWhatsApp(withNine);
-            if (resultWithNine?.exists) {
-                this.logger.log(`[Validation] JID validado para ${number}: ${resultWithNine.jid}`);
-                return resultWithNine.jid;
-            }
-            
-            // Se falhar, verifica a versão sem '9'
-            const [resultWithoutNine] = await sock.onWhatsApp(withoutNine);
-            if (resultWithoutNine?.exists) {
-                this.logger.log(`[Validation] JID validado para ${number}: ${resultWithoutNine.jid}`);
-                return resultWithoutNine.jid;
-            }
+        let withNine = '';
+        let withoutNine = '';
+
+        if (body.length === 9 && body.startsWith('9')) { // Formato: 55XX9XXXXXXXX
+          withNine = cleaned;
+          withoutNine = `55${ddd}${body.substring(1)}`;
+        } else if (body.length === 8) { // Formato: 55XX_XXXXXXXX
+          withNine = `55${ddd}9${body}`;
+          withoutNine = cleaned;
         } else {
-            // Para números não brasileiros, apenas verifica o número limpo
-            const [result] = await sock.onWhatsApp(cleaned);
-            if (result?.exists) {
-                return result.jid;
-            }
+          // Não é um formato de celular padrão, verifica o número como está
+          const [result] = await sock.onWhatsApp(cleaned);
+          return result?.exists ? result.jid : null;
         }
 
-        this.logger.warn(`[Validation] Nenhuma conta do WhatsApp encontrada para ${number}`);
-        return null;
+        // Verifica a versão com '9' primeiro, que é a mais comum
+        const [resultWithNine] = await sock.onWhatsApp(withNine);
+        if (resultWithNine?.exists) {
+          this.logger.log(`[Validation] JID validado para ${number}: ${resultWithNine.jid}`);
+          return resultWithNine.jid;
+        }
+
+        // Se falhar, verifica a versão sem '9'
+        const [resultWithoutNine] = await sock.onWhatsApp(withoutNine);
+        if (resultWithoutNine?.exists) {
+          this.logger.log(`[Validation] JID validado para ${number}: ${resultWithoutNine.jid}`);
+          return resultWithoutNine.jid;
+        }
+      } else {
+        // Para números não brasileiros, apenas verifica o número limpo
+        const [result] = await sock.onWhatsApp(cleaned);
+        if (result?.exists) {
+          return result.jid;
+        }
+      }
+
+      this.logger.warn(`[Validation] Nenhuma conta do WhatsApp encontrada para ${number}`);
+      return null;
     } catch (error) {
-        this.logger.error(`[Validation] Erro ao validar o número ${number}: ${error.message}`);
-        return null;
+      this.logger.error(`[Validation] Erro ao validar o número ${number}: ${error.message}`);
+      return null;
     }
   }
 
@@ -530,15 +595,15 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
     const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];
 
-    const threshold = 2; 
+    const threshold = 2;
 
     // Função auxiliar para encontrar a menor distância em uma lista de palavras
     const getMinDistance = (text: string, keywords: string[]): number => {
       return Math.min(
         ...keywords.map(kw => {
-            const dist = this.levenshtein(text, kw);
-            if (kw.length <= 3 && dist > 1) return 99; 
-            return dist;
+          const dist = this.levenshtein(text, kw);
+          if (kw.length <= 3 && dist > 1) return 99;
+          return dist;
         })
       );
     };
@@ -560,7 +625,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`[${phone}] Intenção 'Cancelar' detectada para "${normalizedText}"`);
       return this.cancel(pending, phone, fromJid);
     }
-    
+
     await this.sendMessageSimple(
       phone,
       fromJid,
@@ -787,7 +852,7 @@ Deseja também *confirmar* ou *cancelar* este horário?`;
       }
     }
   }
-  
+
   /**
    * Calcula a distância Levenshtein entre duas strings (a e b).
    * Mede o número de edições (inserções, deleções, substituições)
