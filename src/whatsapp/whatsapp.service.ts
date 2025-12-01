@@ -13,6 +13,7 @@ import { firstValueFrom } from 'rxjs';
 import { WhatsappConnection } from './entities/whatsapp-connection.entity';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as util from 'util';
 
 // Importações da biblioteca Baileys
 import makeWASocket, {
@@ -86,7 +87,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     const originalConsoleWarn = console.warn;
 
     const shouldSuppress = (args: any[]) => {
-      const msg = args.join(' ');
+      const msg = args.map(arg => {
+        if (typeof arg === 'string') return arg;
+        return util.inspect(arg, { depth: null, colors: false, breakLength: Infinity });
+      }).join(' ');
+
       const lowerMsg = msg.toLowerCase();
       return (
         lowerMsg.includes('bad mac') ||
@@ -96,7 +101,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         lowerMsg.includes('no matching sessions found') ||
         lowerMsg.includes('sessionentry') ||
         lowerMsg.includes('closing session') ||
-        lowerMsg.includes('closing open session')
+        lowerMsg.includes('closing open session') ||
+        lowerMsg.includes('stream errored out') ||
+        lowerMsg.includes('stream:error')
       );
     };
 
@@ -111,6 +118,16 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     };
 
     console.warn = (...args) => {
+      if (shouldSuppress(args)) return;
+      originalConsoleWarn.apply(console, args);
+    };
+
+    console.info = (...args) => {
+      if (shouldSuppress(args)) return;
+      originalConsoleWarn.apply(console, args);
+    };
+
+    console.debug = (...args) => {
       if (shouldSuppress(args)) return;
       originalConsoleWarn.apply(console, args);
     };
@@ -148,6 +165,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     this.connectingSessions.add(phone);
     const sessionPath = this.getSessionPath(phone);
+
+    // Ensure the session directory exists before attempting to write credentials
+    if (!fs.existsSync(sessionPath)) {
+      fs.mkdirSync(sessionPath, { recursive: true });
+    }
 
     return new Promise(async (resolve, reject) => {
       try {
@@ -196,7 +218,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             this.connectingSessions.delete(phone);
             reject(new Error(`[${phone}] Tempo esgotado para conectar.`));
           }
-        }, 60000); // 60 segundos de timeout
+        }, 30000); // 30 segundos de timeout
 
         sock.ev.on('creds.update', saveCreds);
 
