@@ -65,6 +65,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   // Timeout para chamadas HTTP (em ms)
   private readonly HTTP_TIMEOUT = 30000;
 
+  // Cache de mensagens processadas para evitar duplicidade
+  private processedMessages = new Set<string>();
+
   constructor(
     private readonly httpService: HttpService,
     @InjectRepository(PendingConfirmation)
@@ -103,7 +106,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         lowerMsg.includes('closing session') ||
         lowerMsg.includes('closing open session') ||
         lowerMsg.includes('stream errored out') ||
-        lowerMsg.includes('stream:error')
+        lowerMsg.includes('stream:error') ||
+        lowerMsg.includes('Closing stale')
       );
     };
 
@@ -143,9 +147,18 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleDestroy() {
     this.logger.log('Destruindo todas as sessões ativas...');
-    for (const sessionId of this.sessions.keys()) {
-      await this.disconnect(sessionId, false);
+    for (const [phone, sock] of this.sessions) {
+      try {
+        sock.end(undefined);
+        this.logger.log(`[${phone}] Sessão encerrada (sem logout).`);
+      } catch (e) {
+        this.logger.error(`[${phone}] Erro ao encerrar sessão: ${e.message}`);
+      }
     }
+    this.sessions.clear();
+    this.connectingSessions.clear();
+    this.messageQueues.clear();
+    this.syncedSessions.clear();
   }
 
   private getSessionPath(phone: string): string {
@@ -223,6 +236,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         sock.ev.on('creds.update', saveCreds);
 
         sock.ev.on('messages.upsert', async (m) => {
+          // Apenas processa mensagens novas (notify) para evitar duplicidade com append
+          if (m.type !== 'notify') return;
+
           const msg = m.messages[0];
           if (!msg.message || msg.key.fromMe) return;
           await this.handleIncoming(phone, msg);
@@ -591,13 +607,31 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     });
     await this.pendingRepo.save(pending);
 
-    // Esta é a mensagem inicial, enviada em massa, então isReply é false e a validação é necessária
     await this.enqueueMessage(phone, { to: to, text, isReply: false, skipValidation: false });
   }
 
   private async handleIncoming(phone: string, message: WAMessage) {
+    if (!message.key.id) return;
+
+    // Deduplicação de mensagens
+    if (this.processedMessages.has(message.key.id)) {
+      this.logger.debug(`[${phone}] Mensagem ${message.key.id} ignorada (duplicada).`);
+      return;
+    }
+    this.processedMessages.add(message.key.id);
+    setTimeout(() => this.processedMessages.delete(message.key.id), 5000); // Limpa após 5 segundos
+
     const messageContent = message.message?.conversation || message.message?.extendedTextMessage?.text;
-    const fromJid = message.key.remoteJid;
+
+    let fromJid = message.key.remoteJid;
+
+    const key = message.key
+
+    if (key.senderPn) {
+      fromJid = key.senderPn;
+    } else if (key.participant) {
+      fromJid = key.participant;
+    }
 
     if (!messageContent || !fromJid) return;
     this.logger.log(`[${phone}] Recebido de ${fromJid}: ${messageContent}`);
