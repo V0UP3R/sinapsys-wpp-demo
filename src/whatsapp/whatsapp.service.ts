@@ -592,7 +592,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Client not connected');
     }
 
-    // Salva a pendência com o número "cru", a validação e formatação acontecerão na fila
+    const enqueued = await this.enqueueMessage(phone, { to, text, isReply: false, skipValidation: false });
+    if (!enqueued) {
+      this.logger.error(`[${phone}] Enfileiramento falhou para o agendamento ${appointmentId}.`);
+      throw new Error('Failed to enqueue message');
+    }
+
+    // Salva a pendência somente após o enfileiramento ter sucesso
     const cleanedTo = to.replace(/\D/g, '');
     const formattedPending = `${cleanedTo}@c.us`;
 
@@ -605,9 +611,15 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       createdAt: now,
       expiresAt,
     });
-    await this.pendingRepo.save(pending);
 
-    await this.enqueueMessage(phone, { to: to, text, isReply: false, skipValidation: false });
+    try {
+      await this.pendingRepo.save(pending);
+    } catch (error) {
+      // Evita retentativas que poderiam duplicar envio; registra apenas.
+      this.logger.error(
+        `[${phone}] Falha ao salvar pendência para o agendamento ${appointmentId}: ${error.message}`,
+      );
+    }
   }
 
   private async handleIncoming(phone: string, message: WAMessage) {
