@@ -34,6 +34,7 @@ interface MessagePayload {
   to: string; // Pode ser um número cru ou um JID completo
   text: string;
   isReply: boolean;
+  appointmentId?: number;
   skipValidation?: boolean; // NOVO: Flag para pular a validação em respostas
 }
 
@@ -263,6 +264,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               await this.connRepo.save(conn);
             }
             await this.connRepo.update({ phoneNumber: phone }, { qrCodeUrl: qrUrl });
+            await this.notifyFrontendStatus({
+              phoneNumber: phone,
+              status: 'connecting',
+              qrCodeUrl: qrUrl,
+            });
 
             if (!promiseResolved) {
               promiseResolved = true;
@@ -276,7 +282,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             this.sessions.set(phone, sock);
             this.connectingSessions.delete(phone);
             await this.connRepo.update({ phoneNumber: phone }, { status: 'connected', qrCodeUrl: null });
-            await this.notifyFrontendStatus(phone);
+            await this.notifyFrontendStatus({ phoneNumber: phone, status: 'connected', qrCodeUrl: null });
 
             if (!promiseResolved) {
               promiseResolved = true;
@@ -293,6 +299,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             this.sessions.delete(phone);
             this.syncedSessions.delete(phone); // Limpa estado de sincronização
             await this.connRepo.update({ phoneNumber: phone }, { status: 'disconnected' });
+            await this.notifyFrontendStatus({ phoneNumber: phone, status: 'disconnected', qrCodeUrl: null });
 
             if (statusCode === 405 || reason === '405') {
               this.logger.warn(`[${phone}] Erro 405 detectado. Limpando sessão completamente...`);
@@ -357,7 +364,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     if (deleteFromDb) {
       await this.connRepo.delete({ phoneNumber: phone });
     }
-    await this.notifyFrontendStatus(phone);
+    await this.notifyFrontendStatus({ phoneNumber: phone, status: 'disconnected', qrCodeUrl: null });
     this.logger.log(`[${phone}] Sessão desconectada e arquivos limpos.`);
   }
 
@@ -465,13 +472,15 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     jid: string,
     text: string,
     maxRetries: number = 3
-  ): Promise<boolean> {
+  ): Promise<{ success: boolean; messageId?: string; errorMessage?: string }> {
+    let lastError: string | undefined;
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       // Verifica se a sessão ainda está ativa antes de cada tentativa
       const sock = this.sessions.get(phone);
       if (!sock) {
-        this.logger.error(`[SendRetry] Sessão ${phone} não está mais ativa. Abortando.`);
-        return false;
+        this.logger.error(`[SendRetry] Sessao ${phone} nao esta mais ativa. Abortando.`);
+        return { success: false, errorMessage: 'Sessao nao esta ativa.' };
       }
 
       try {
@@ -487,11 +496,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         // Verifica se a mensagem foi enviada com sucesso
         if (result?.key?.id) {
           this.logger.log(`[SendRetry] Mensagem enviada com sucesso (ID: ${result.key.id})`);
-          return true;
+          return { success: true, messageId: result.key.id };
         }
 
         this.logger.warn(`[SendRetry] Resultado inesperado na tentativa ${attempt}: ${JSON.stringify(result)}`);
       } catch (error) {
+        lastError = error.message;
         this.logger.error(`[SendRetry] Erro na tentativa ${attempt}/${maxRetries}: ${error.message}`);
 
         // Se for erro de Bad MAC, aguarda mais tempo
@@ -500,7 +510,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         }
       }
     }
-    return false;
+    return { success: false, errorMessage: lastError };
   }
 
   private async processMessageQueue(phone: string) {
@@ -539,16 +549,69 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         }
 
         if (!finalJid) {
-          this.logger.error(`[Queue] Número ${payload.to} inválido ou não encontrado no WhatsApp. Mensagem descartada.`);
+          this.logger.error(`[Queue] Numero ${payload.to} invalido ou nao encontrado no WhatsApp. Mensagem descartada.`);
+          if (payload.appointmentId) {
+            await this.notifyConfirmationStatus({
+              appointmentId: payload.appointmentId,
+              status: 'FAILED',
+              failedAt: new Date().toISOString(),
+              recipientPhone: payload.to,
+              errorMessage: 'Numero invalido ou nao encontrado no WhatsApp.',
+            });
+            await this.notifyConfirmationEvent({
+              appointmentId: payload.appointmentId,
+              type: 'FAILED',
+              direction: 'OUTGOING',
+              messageText: payload.text,
+              phone: payload.to,
+              errorMessage: 'Numero invalido ou nao encontrado no WhatsApp.',
+              occurredAt: new Date().toISOString(),
+            });
+          }
           continue;
         }
 
         this.logger.log(`[Queue] Enviando mensagem para ${finalJid} a partir da fila.`);
 
-        const success = await this.sendMessageWithRetry(phone, finalJid, payload.text, 3);
+        const sendResult = await this.sendMessageWithRetry(phone, finalJid, payload.text, 3);
 
-        if (!success) {
-          this.logger.error(`[Queue] Falha ao enviar mensagem para ${finalJid} após todas as tentativas.`);
+        if (!sendResult.success) {
+          this.logger.error(`[Queue] Falha ao enviar mensagem para ${finalJid} apos todas as tentativas.`);
+          if (payload.appointmentId) {
+            await this.notifyConfirmationStatus({
+              appointmentId: payload.appointmentId,
+              status: 'FAILED',
+              failedAt: new Date().toISOString(),
+              recipientPhone: payload.to,
+              errorMessage: sendResult.errorMessage || 'Falha ao enviar mensagem.',
+            });
+            await this.notifyConfirmationEvent({
+              appointmentId: payload.appointmentId,
+              type: 'FAILED',
+              direction: 'OUTGOING',
+              messageText: payload.text,
+              phone: payload.to,
+              errorMessage: sendResult.errorMessage || 'Falha ao enviar mensagem.',
+              occurredAt: new Date().toISOString(),
+            });
+          }
+        } else if (payload.appointmentId) {
+          await this.notifyConfirmationStatus({
+            appointmentId: payload.appointmentId,
+            status: 'SENT',
+            sentAt: new Date().toISOString(),
+            recipientPhone: payload.to,
+            providerMessageId: sendResult.messageId,
+          });
+          await this.notifyConfirmationEvent({
+            appointmentId: payload.appointmentId,
+            type: 'SENT',
+            direction: 'OUTGOING',
+            messageText: payload.text,
+            phone: payload.to,
+            providerMessageId: sendResult.messageId,
+            occurredAt: new Date().toISOString(),
+          });
         }
 
         const interval = this.getRandomInterval(payload.isReply);
@@ -592,7 +655,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Client not connected');
     }
 
-    const enqueued = await this.enqueueMessage(phone, { to, text, isReply: false, skipValidation: false });
+    const enqueued = await this.enqueueMessage(phone, {
+      to,
+      text,
+      isReply: false,
+      skipValidation: false,
+      appointmentId,
+    });
     if (!enqueued) {
       this.logger.error(`[${phone}] Enfileiramento falhou para o agendamento ${appointmentId}.`);
       throw new Error('Failed to enqueue message');
@@ -658,6 +727,15 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     if (!pending) return;
 
+    await this.notifyConfirmationEvent({
+      appointmentId: pending.appointmentId,
+      type: 'INCOMING',
+      direction: 'INCOMING',
+      messageText: messageContent,
+      phone: fromAsCus,
+      occurredAt: new Date().toISOString(),
+    });
+
     const normalizedText = this.normalize(messageContent);
 
     const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
@@ -697,27 +775,62 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     await this.sendMessageSimple(
       phone,
       fromJid,
-      'Desculpe, não entendi. Por favor, responda apenas com a palavra *confirmar* ou *cancelar*.'
+      'Desculpe, não entendi. Por favor, responda apenas com a palavra *confirmar* ou *cancelar*.',
+      pending.appointmentId,
     );
   }
 
+
+  private async updateAppointmentStatusWithRetry(
+    appointmentId: number,
+    status: 'Confirmado' | 'Cancelado',
+    reasonLack?: string,
+  ): Promise<boolean> {
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await firstValueFrom(
+          this.httpService.patch(
+            `http://localhost:3001/appointment/block/${appointmentId}`,
+            reasonLack ? { status, reasonLack } : { status },
+            {
+              headers: { 'x-internal-api-secret': process.env.API_SECRET },
+              timeout: this.HTTP_TIMEOUT,
+            },
+          ),
+        );
+        return true;
+      } catch (error) {
+        this.logger.error(
+          `Falha ao atualizar bloco para ${status} (tentativa ${attempt}/${maxAttempts}) para o appt ID ${appointmentId}: ${error.message}`,
+        );
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+      }
+    }
+    return false;
+  }
+
+
   private async confirm(conf: any, phone: string, from: string) {
-    try {
-      await firstValueFrom(
-        this.httpService.patch(
-          `http://localhost:3001/appointment/block/${conf.appointmentId}`,
-          { status: 'Confirmado' },
-          {
-            headers: { 'x-internal-api-secret': process.env.API_SECRET },
-            timeout: this.HTTP_TIMEOUT,
-          },
-        ),
+    const updated = await this.updateAppointmentStatusWithRetry(conf.appointmentId, 'Confirmado');
+    if (!updated) {
+      await this.sendMessageSimple(
+        phone,
+        from,
+        'Ocorreu um erro ao processar sua confirmacao. Por favor, tente novamente ou contate a clinica.',
+        conf.appointmentId,
       );
-    } catch (error) {
-      this.logger.error(`Falha ao atualizar bloco para CONFIRMADO para o appt ID ${conf.appointmentId}: ${error.message}`);
-      await this.sendMessageSimple(phone, from, 'Ocorreu um erro ao processar sua confirmação. Por favor, tente novamente ou contate a clínica.');
       return;
     }
+
+    await this.notifyConfirmationEvent({
+      appointmentId: conf.appointmentId,
+      type: 'CONFIRMED',
+      direction: 'SYSTEM',
+      occurredAt: new Date().toISOString(),
+    });
 
     try {
       const details = await this.getAppointmentDetails(conf.appointmentId);
@@ -730,32 +843,42 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
       const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
       const greeting = responsibleInfo
-        ? `Olá, ${recipientName}! O agendamento de ${patientName} com ${professionalName} na clínica ${clinicName} está confirmado.`
-        : `Olá, ${recipientName}! Seu agendamento com ${professionalName} na clínica ${clinicName} está confirmado.`;
+        ? `Ola, ${recipientName}! O agendamento de ${patientName} com ${professionalName} na clinica ${clinicName} esta confirmado.`
+        : `Ola, ${recipientName}! Seu agendamento com ${professionalName} na clinica ${clinicName} esta confirmado.`;
 
       const blockStartTime = new Date(details.blockStartTime);
       const blockEndTime = new Date(details.blockEndTime);
       const durationMinutes = (blockEndTime.getTime() - blockStartTime.getTime()) / (1000 * 60);
 
-      const confirmationMessage = `✅ *Confirmado!*
+      const confirmationMessage = `CONFIRMADO!
 
 ${greeting}
 
-🗓️ *Data:* ${appointmentDate}
-⏰ *Horário:* Das ${blockStartTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} às ${blockEndTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-⏳ *Duração Estimada:* ${durationMinutes} minutos
-📍 *Local:* ${address}
+Data: ${appointmentDate}
+Horario: Das ${blockStartTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} as ${blockEndTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+Duracao Estimada: ${durationMinutes} minutos
+Local: ${address}
 
-Por favor, chegue com alguns minutos de antecedência. Em caso de dúvidas ou se precisar reagendar, entre em contato.
-📞 *Contato da Clínica:* ${clinicPhone}
+Por favor, chegue com alguns minutos de antecedencia. Em caso de duvidas ou se precisar reagendar, entre em contato.
+Contato da Clinica: ${clinicPhone}
 
-Até lá!
+Ate la!
 ---
-_Esta é uma mensagem automática. Por favor, não responda._`;
-      await this.sendMessageSimple(phone, from, confirmationMessage);
+Esta e uma mensagem automatica. Por favor, nao responda.`;
+      await this.sendMessageSimple(
+        phone,
+        from,
+        confirmationMessage,
+        conf.appointmentId,
+      );
     } catch (error) {
-      this.logger.error(`Erro ao enviar confirmação detalhada: ${error.message}`);
-      await this.sendMessageSimple(phone, from, 'Seu agendamento foi confirmado com sucesso!');
+      this.logger.error(`Erro ao enviar confirmacao detalhada: ${error.message}`);
+      await this.sendMessageSimple(
+        phone,
+        from,
+        'Seu agendamento foi confirmado com sucesso!',
+        conf.appointmentId,
+      );
     }
 
     await this.pendingRepo.delete({ id: conf.id });
@@ -763,22 +886,27 @@ _Esta é uma mensagem automática. Por favor, não responda._`;
   }
 
   private async cancel(conf: any, phone: string, from: string) {
-    try {
-      await firstValueFrom(
-        this.httpService.patch(
-          `http://localhost:3001/appointment/block/${conf.appointmentId}`,
-          { status: 'Cancelado', reasonLack: 'Cancelado pelo WhatsApp' },
-          {
-            headers: { 'x-internal-api-secret': process.env.API_SECRET },
-            timeout: this.HTTP_TIMEOUT,
-          },
-        ),
+    const updated = await this.updateAppointmentStatusWithRetry(
+      conf.appointmentId,
+      'Cancelado',
+      'Cancelado pelo WhatsApp',
+    );
+    if (!updated) {
+      await this.sendMessageSimple(
+        phone,
+        from,
+        'Ocorreu um erro ao processar seu cancelamento. Por favor, tente novamente ou contate a clinica.',
+        conf.appointmentId,
       );
-    } catch (error) {
-      this.logger.error(`Falha ao atualizar bloco para CANCELADO para o appt ID ${conf.appointmentId}: ${error.message}`);
-      await this.sendMessageSimple(phone, from, 'Ocorreu um erro ao processar seu cancelamento. Por favor, tente novamente ou contate a clínica.');
       return;
     }
+
+    await this.notifyConfirmationEvent({
+      appointmentId: conf.appointmentId,
+      type: 'CANCELED',
+      direction: 'SYSTEM',
+      occurredAt: new Date().toISOString(),
+    });
 
     try {
       const details = await this.getAppointmentDetails(conf.appointmentId);
@@ -789,41 +917,124 @@ _Esta é uma mensagem automática. Por favor, não responda._`;
       const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
       const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
       const greeting = responsibleInfo
-        ? `Olá, ${recipientName}. Conforme sua solicitação, o agendamento de ${patientName} com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`
-        : `Olá, ${recipientName}. Conforme sua solicitação, o agendamento com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`;
+        ? `Ola, ${recipientName}. Conforme sua solicitacao, o agendamento de ${patientName} com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`
+        : `Ola, ${recipientName}. Conforme sua solicitacao, o agendamento com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`;
 
-      const cancellationMessage = `❌ *Agendamento Cancelado*
+      const cancellationMessage = `Agendamento Cancelado
 
 ${greeting}
 
-Se desejar remarcar, por favor, entre em contato diretamente com a clínica.
-📞 *Contato:* ${clinicPhone}
+Se desejar remarcar, por favor, entre em contato diretamente com a clinica.
+Contato: ${clinicPhone}
 
-Esperamos vê-lo em breve.
+Esperamos ve-lo em breve.
 ---
-_Esta é uma mensagem automática._`;
-      await this.sendMessageSimple(phone, from, cancellationMessage);
+Esta e uma mensagem automatica.`;
+      await this.sendMessageSimple(
+        phone,
+        from,
+        cancellationMessage,
+        conf.appointmentId,
+      );
     } catch (error) {
       this.logger.error(`Erro ao enviar cancelamento detalhado: ${error.message}`);
-      const fallbackMessage = 'Seu agendamento foi cancelado conforme solicitado. Caso deseje remarcar, por favor, entre em contato diretamente com a clínica.';
-      await this.sendMessageSimple(phone, from, fallbackMessage);
+      const fallbackMessage = 'Seu agendamento foi cancelado conforme solicitado. Caso deseje remarcar, por favor, entre em contato diretamente com a clinica.';
+      await this.sendMessageSimple(
+        phone,
+        from,
+        fallbackMessage,
+        conf.appointmentId,
+      );
     }
 
     await this.pendingRepo.delete({ id: conf.id });
     await this.checkAndNotifyNextPendingAppointment(phone, from);
   }
 
-  private async sendMessageSimple(phone: string, to: string, text: string) {
-    // Como 'to' aqui é um JID de uma mensagem recebida, ele já é válido.
-    await this.enqueueMessage(phone, { to: to, text, isReply: true, skipValidation: true });
+  private async sendMessageSimple(
+    phone: string,
+    to: string,
+    text: string,
+    appointmentId?: number,
+  ) {
+    // Como 'to' aqui e um JID de uma mensagem recebida, ele ja e valido.
+    await this.enqueueMessage(phone, {
+      to: to,
+      text,
+      isReply: true,
+      skipValidation: true,
+      appointmentId,
+    });
   }
 
-  private async notifyFrontendStatus(phone: string) {
+  private async notifyConfirmationStatus(payload: {
+    appointmentId: number;
+    status: 'SENT' | 'FAILED';
+    sentAt?: string;
+    failedAt?: string;
+    providerMessageId?: string;
+    recipientPhone?: string;
+    errorMessage?: string;
+  }) {
+    try {
+      await firstValueFrom(
+        this.httpService.post(
+          'http://localhost:3001/appointment/confirmation-message/status',
+          payload,
+          {
+            headers: { 'x-internal-api-secret': process.env.API_SECRET },
+            timeout: this.HTTP_TIMEOUT,
+          },
+        ),
+      );
+    } catch (error) {
+      this.logger.error(
+        `Falha ao atualizar status de confirmacao do agendamento ${payload.appointmentId}: ${error.message}`,
+      );
+    }
+  }
+
+  private async notifyConfirmationEvent(payload: {
+    appointmentId: number;
+    type: 'QUEUED' | 'SENT' | 'FAILED' | 'INCOMING' | 'CONFIRMED' | 'CANCELED';
+    direction?: 'INCOMING' | 'OUTGOING' | 'SYSTEM';
+    messageText?: string;
+    providerMessageId?: string;
+    phone?: string;
+    errorMessage?: string;
+    occurredAt?: string;
+  }) {
+    try {
+      await firstValueFrom(
+        this.httpService.post(
+          'http://localhost:3001/appointment/confirmation-message/events',
+          payload,
+          {
+            headers: { 'x-internal-api-secret': process.env.API_SECRET },
+            timeout: this.HTTP_TIMEOUT,
+          },
+        ),
+      );
+    } catch (error) {
+      this.logger.error(
+        `Falha ao registrar evento de confirmacao do agendamento ${payload.appointmentId}: ${error.message}`,
+      );
+    }
+  }
+
+
+
+
+  private async notifyFrontendStatus(payload: {
+    phoneNumber: string;
+    status?: string;
+    qrCodeUrl?: string | null;
+  }) {
     try {
       await firstValueFrom(
         this.httpService.post(
           'http://localhost:3001/whatsapp/status-update',
-          { phoneNumber: phone },
+          payload,
           {
             headers: { 'x-internal-api-secret': process.env.API_SECRET },
             timeout: this.HTTP_TIMEOUT,
@@ -831,7 +1042,7 @@ _Esta é uma mensagem automática._`;
         ),
       );
     } catch (e) {
-      this.logger.error(`[${phone}] Falha ao notificar o frontend sobre desconexão: ${e.message}`);
+      this.logger.error(`[${payload.phoneNumber}] Falha ao notificar o frontend sobre desconex?o: ${e.message}`);
     }
   }
 
@@ -913,7 +1124,12 @@ _Esta é uma mensagem automática._`;
 
 Deseja também *confirmar* ou *cancelar* este horário?`;
 
-        await this.sendMessageSimple(phone, from, followUpMessage);
+        await this.sendMessageSimple(
+          phone,
+          from,
+          followUpMessage,
+          nextPending.appointmentId,
+        );
         this.logger.log(`Enviada mensagem de acompanhamento para o agendamento ${nextPending.appointmentId} para o número ${from}.`);
       } catch (error) {
         this.logger.error(`Falha ao notificar próxima pendência para ${from}: ${error.message}`);
