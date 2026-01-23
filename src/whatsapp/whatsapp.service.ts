@@ -673,15 +673,18 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 6 * 60 * 60 * 1000);
-    const pending = this.pendingRepo.create({
-      id: uuidv4(),
-      appointmentId,
-      phone: formattedPending,
-      createdAt: now,
-      expiresAt,
-    });
 
     try {
+      // Remove registros anteriores do mesmo appointment para evitar duplicatas
+      await this.pendingRepo.delete({ appointmentId });
+
+      const pending = this.pendingRepo.create({
+        id: uuidv4(),
+        appointmentId,
+        phone: formattedPending,
+        createdAt: now,
+        expiresAt,
+      });
       await this.pendingRepo.save(pending);
     } catch (error) {
       // Evita retentativas que poderiam duplicar envio; registra apenas.
@@ -881,7 +884,8 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
       );
     }
 
-    await this.pendingRepo.delete({ id: conf.id });
+    // Deleta TODOS os registros pendentes deste appointment (evita duplicatas órfãs)
+    await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
     await this.checkAndNotifyNextPendingAppointment(phone, from);
   }
 
@@ -947,7 +951,8 @@ Esta e uma mensagem automatica.`;
       );
     }
 
-    await this.pendingRepo.delete({ id: conf.id });
+    // Deleta TODOS os registros pendentes deste appointment (evita duplicatas órfãs)
+    await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
     await this.checkAndNotifyNextPendingAppointment(phone, from);
   }
 
