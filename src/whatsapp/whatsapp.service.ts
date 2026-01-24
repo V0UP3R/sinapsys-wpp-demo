@@ -796,7 +796,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     await this.sendMessageSimple(
       phone,
       fromJid,
-      'Desculpe, não entendi. Por favor, responda apenas com a palavra *confirmar* ou *cancelar*.',
+      'Desculpe, não entendi. Por favor, responda novamente para eu entender melhor.',
       pending.appointmentId,
     );
   }
@@ -1099,14 +1099,14 @@ Esta e uma mensagem automatica.`;
     if (!this.openai) return 'inconclusivo';
 
     const systemPrompt =
-      'Voc? classifica mensagens de confirma??o de agendamento no WhatsApp. ' +
+      'Você classifica mensagens de confirmação de agendamento no WhatsApp. ' +
       'Responda somente com uma palavra: confirmar, cancelar, ou inconclusivo. ' +
-      'Interprete erros de digita??o e varia??es como se fossem a inten??o original.';
+      'Interprete erros de digitação e variações como se fossem a intenção original.';
     const userPrompt =
-      `Mensagem do paciente/respons?vel: "${messageText}"
+      `Mensagem do paciente/responsável: "${messageText}"
 ` +
-      'Classifique se confirma o atendimento ou se cancela. Emojis contam (ex: ?? confirma). ' +
-      'Considere que respostas como "da sim", "da s*", "pode sim", "pode confirmar" e suas varia??es com typos indicam confirmar.';
+      'Classifique se confirma o atendimento ou se cancela. Emojis contam (ex: 👍 confirma). ' +
+      'Considere que respostas como "da sim", "da s*", "pode sim", "pode confirmar" e suas variáveis com tipos indicam confirmar.';
 
     try {
       const response = await this.openai.chat.completions.create({
@@ -1120,7 +1120,7 @@ Esta e uma mensagem automatica.`;
             type: 'function',
             function: {
               name: 'classify_intent',
-              description: 'Classifica a inten??o da mensagem do paciente.',
+              description: 'Classifica a intenção da mensagem do paciente.',
               parameters: {
                 type: 'object',
                 properties: {
