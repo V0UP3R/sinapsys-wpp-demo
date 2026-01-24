@@ -28,6 +28,7 @@ import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import { RedisService } from '../redis/redis.service';
 import { makeRedisStore } from './baileys-redis-store';
+import OpenAI from 'openai';
 
 // Interface para a carga útil da mensagem na fila
 interface MessagePayload {
@@ -44,6 +45,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private connectingSessions = new Set<string>();
   private syncedSessions = new Set<string>(); // Rastreia sessões que completaram sincronização
   private readonly logger = new Logger(WhatsappService.name);
+  private readonly openai?: OpenAI;
   private readonly SESSIONS_DIR = path.join(process.cwd(), '.baileys_auth');
 
   // Gerenciador de filas de mensagens para controlar o fluxo de envio
@@ -79,6 +81,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   ) {
     if (!fs.existsSync(this.SESSIONS_DIR)) {
       fs.mkdirSync(this.SESSIONS_DIR, { recursive: true });
+    }
+    if (process.env.OPENAI_API_KEY) {
+      this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    } else {
+      this.logger.warn('OPENAI_API_KEY ausente. Classificacao GPT desativada.');
     }
     if (process.env.NODE_ENV === 'development') {
       this.logger.debug('Modo de desenvolvimento - Controles especiais ativados');
@@ -775,6 +782,17 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       return this.cancel(pending, phone, fromJid);
     }
 
+    const gptIntent = await this.classifyIntentWithGpt(messageContent);
+    if (gptIntent === 'confirmar') {
+      this.logger.log(`[${phone}] Intenção 'Confirmar' detectada via GPT para "${messageContent}"`);
+      return this.confirm(pending, phone, fromJid);
+    }
+
+    if (gptIntent === 'cancelar') {
+      this.logger.log(`[${phone}] Intenção 'Cancelar' detectada via GPT para "${messageContent}"`);
+      return this.cancel(pending, phone, fromJid);
+    }
+
     await this.sendMessageSimple(
       phone,
       fromJid,
@@ -1073,6 +1091,77 @@ Esta e uma mensagem automatica.`;
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^\w\s]/gi, '')
       .trim();
+  }
+
+  private async classifyIntentWithGpt(
+    messageText: string,
+  ): Promise<'confirmar' | 'cancelar' | 'inconclusivo'> {
+    if (!this.openai) return 'inconclusivo';
+
+    const systemPrompt =
+      'Voc? classifica mensagens de confirma??o de agendamento no WhatsApp. ' +
+      'Responda somente com uma palavra: confirmar, cancelar, ou inconclusivo. ' +
+      'Interprete erros de digita??o e varia??es como se fossem a inten??o original.';
+    const userPrompt =
+      `Mensagem do paciente/respons?vel: "${messageText}"
+` +
+      'Classifique se confirma o atendimento ou se cancela. Emojis contam (ex: ?? confirma). ' +
+      'Considere que respostas como "da sim", "da s*", "pode sim", "pode confirmar" e suas varia??es com typos indicam confirmar.';
+
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4.1-nano',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'classify_intent',
+              description: 'Classifica a inten??o da mensagem do paciente.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  intent: {
+                    type: 'string',
+                    enum: ['confirmar', 'cancelar', 'inconclusivo'],
+                  },
+                },
+                required: ['intent'],
+                additionalProperties: false,
+              },
+            },
+          },
+        ],
+        tool_choice: {
+          type: 'function',
+          function: { name: 'classify_intent' },
+        },
+        temperature: 0,
+        max_tokens: 50,
+      });
+
+      const toolCall = response.choices?.[0]?.message?.tool_calls?.[0];
+      const args = toolCall?.function?.arguments;
+      if (!args) return 'inconclusivo';
+      try {
+        const parsed = JSON.parse(args) as { intent?: string };
+        this.logger.log(`Resposta do GPT para classificação: ${parsed.intent || 'inconclusivo'}`);
+        if (parsed.intent === 'confirmar' || parsed.intent === 'cancelar') return parsed.intent;
+        return 'inconclusivo';
+      } catch (parseError) {
+        const argsLower = args.toLowerCase();
+        this.logger.warn(`Falha ao parsear JSON do GPT: ${parseError.message}. Args: ${args}`);
+        if (argsLower.includes('confirm')) return 'confirmar';
+        if (argsLower.includes('cancel')) return 'cancelar';
+        return 'inconclusivo';
+      }
+    } catch (error) {
+      this.logger.error(`Erro ao classificar com GPT: ${error.message}`);
+      return 'inconclusivo';
+    }
   }
 
   private async getAppointmentDetails(id: number): Promise<any> {
