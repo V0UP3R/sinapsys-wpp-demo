@@ -855,23 +855,41 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     try {
       const details = await this.getAppointmentDetails(conf.appointmentId);
-      const patientName = details.patient.personalInfo.name;
-      const professionalName = details.professional.user.name;
-      const clinicName = details.clinic.name;
-      const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
-      const address = details.clinic.address;
-      const clinicPhone = details.clinic.phone;
+
+      // Determina se é paciente menor (tem responsável)
       const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
-      const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
-      const greeting = responsibleInfo
-        ? `Ola, ${recipientName}! O agendamento de ${patientName} com ${professionalName} na clinica ${clinicName} esta confirmado.`
-        : `Ola, ${recipientName}! Seu agendamento com ${professionalName} na clinica ${clinicName} esta confirmado.`;
+      const isMinor = !!responsibleInfo;
+      const variant = isMinor ? 'MINOR' : 'ADULT';
 
-      const blockStartTime = new Date(details.blockStartTime);
-      const blockEndTime = new Date(details.blockEndTime);
-      const durationMinutes = (blockEndTime.getTime() - blockStartTime.getTime()) / (1000 * 60);
+      // Tenta buscar template customizado
+      const template = await this.getMessageTemplate(conf.appointmentId, 'CONFIRMATION', variant);
 
-      const confirmationMessage = `CONFIRMADO!
+      let confirmationMessage: string;
+
+      if (template && template.content) {
+        // Usa template customizado
+        const templateData = this.prepareTemplateData(details);
+        confirmationMessage = this.renderTemplate(template.content, templateData);
+        this.logger.log(`[${phone}] Usando template customizado de CONFIRMATION (${variant})`);
+      } else {
+        // Fallback para mensagem hardcoded
+        const patientName = details.patient.personalInfo.name;
+        const professionalName = details.professional.user.name;
+        const clinicName = details.clinic.name;
+        const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
+        const address = details.clinic.address;
+        const clinicPhone = details.clinic.phone;
+        const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
+        const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
+        const greeting = responsibleInfo
+          ? `Ola, ${recipientName}! O agendamento de ${patientName} com ${professionalName} na clinica ${clinicName} esta confirmado.`
+          : `Ola, ${recipientName}! Seu agendamento com ${professionalName} na clinica ${clinicName} esta confirmado.`;
+
+        const blockStartTime = new Date(details.blockStartTime);
+        const blockEndTime = new Date(details.blockEndTime);
+        const durationMinutes = (blockEndTime.getTime() - blockStartTime.getTime()) / (1000 * 60);
+
+        confirmationMessage = `CONFIRMADO!
 
 ${greeting}
 
@@ -886,6 +904,8 @@ Contato da Clinica: ${clinicPhone}
 Ate la!
 ---
 Esta e uma mensagem automatica. Por favor, nao responda.`;
+      }
+
       await this.sendMessageSimple(
         phone,
         from,
@@ -932,17 +952,35 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
 
     try {
       const details = await this.getAppointmentDetails(conf.appointmentId);
-      const patientName = details.patient.personalInfo.name;
-      const professionalName = details.professional.user.name;
-      const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
-      const clinicPhone = details.clinic.phone;
-      const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
-      const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
-      const greeting = responsibleInfo
-        ? `Ola, ${recipientName}. Conforme sua solicitacao, o agendamento de ${patientName} com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`
-        : `Ola, ${recipientName}. Conforme sua solicitacao, o agendamento com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`;
 
-      const cancellationMessage = `Agendamento Cancelado
+      // Determina se é paciente menor (tem responsável)
+      const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
+      const isMinor = !!responsibleInfo;
+      const variant = isMinor ? 'MINOR' : 'ADULT';
+
+      // Tenta buscar template customizado
+      const template = await this.getMessageTemplate(conf.appointmentId, 'CANCELLATION', variant);
+
+      let cancellationMessage: string;
+
+      if (template && template.content) {
+        // Usa template customizado
+        const templateData = this.prepareTemplateData(details);
+        cancellationMessage = this.renderTemplate(template.content, templateData);
+        this.logger.log(`[${phone}] Usando template customizado de CANCELLATION (${variant})`);
+      } else {
+        // Fallback para mensagem hardcoded
+        const patientName = details.patient.personalInfo.name;
+        const professionalName = details.professional.user.name;
+        const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
+        const clinicPhone = details.clinic.phone;
+        const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
+        const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
+        const greeting = responsibleInfo
+          ? `Ola, ${recipientName}. Conforme sua solicitacao, o agendamento de ${patientName} com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`
+          : `Ola, ${recipientName}. Conforme sua solicitacao, o agendamento com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`;
+
+        cancellationMessage = `Agendamento Cancelado
 
 ${greeting}
 
@@ -952,6 +990,8 @@ Contato: ${clinicPhone}
 Esperamos ve-lo em breve.
 ---
 Esta e uma mensagem automatica.`;
+      }
+
       await this.sendMessageSimple(
         phone,
         from,
@@ -1179,6 +1219,125 @@ Esta e uma mensagem automatica.`;
       this.logger.error(`Falha ao buscar detalhes do agendamento ${id}:`, error.message);
       throw new Error('Não foi possível obter os detalhes do agendamento.');
     }
+  }
+
+  /**
+   * Busca template de mensagem customizado da API
+   * @param appointmentId ID do agendamento
+   * @param type Tipo do template: CONFIRMATION ou CANCELLATION
+   * @param variant Variante do template: ADULT ou MINOR
+   */
+  private async getMessageTemplate(
+    appointmentId: number,
+    type: 'CONFIRMATION' | 'CANCELLATION',
+    variant: 'ADULT' | 'MINOR' = 'ADULT',
+  ): Promise<{ content: any[] } | null> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(
+          `http://localhost:3001/message-template/internal/${appointmentId}/${type}?variant=${variant}`,
+          {
+            headers: { 'x-internal-api-secret': process.env.API_SECRET },
+            timeout: 5000,
+          },
+        ),
+      );
+      return response.data;
+    } catch (error) {
+      this.logger.warn(`Template ${type} (${variant}) não encontrado para agendamento ${appointmentId}, usando fallback: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Mapa de emojis disponíveis para renderização de templates
+   */
+  private readonly EMOJI_MAP: Record<string, string> = {
+    calendar: '🗓️',
+    doctor: '🧑‍⚕️',
+    location: '📍',
+    phone: '📞',
+    robot: '🤖',
+    arrow: '➡️',
+    check: '✅',
+    warning: '⚠️',
+    wave: '👋',
+    clock: '⏰',
+    star: '⭐',
+    heart: '❤️',
+    thumbsUp: '👍',
+    bell: '🔔',
+    clipboard: '📋',
+  };
+
+  /**
+   * Renderiza template de mensagem com dados do agendamento
+   * @param elements Array de elementos do template
+   * @param data Dados para preenchimento dos campos
+   */
+  private renderTemplate(
+    elements: any[],
+    data: Record<string, string>,
+  ): string {
+    if (!elements || !Array.isArray(elements)) {
+      return '';
+    }
+
+    return elements
+      .map((el) => {
+        switch (el.type) {
+          case 'text':
+            return el.value || '';
+          case 'field':
+            if (!el.fieldKey) return '';
+            return data[el.fieldKey] || '';
+          case 'emoji':
+            if (!el.emoji) return '';
+            return this.EMOJI_MAP[el.emoji] || '';
+          case 'linebreak':
+            return '\n';
+          default:
+            return '';
+        }
+      })
+      .join('');
+  }
+
+  /**
+   * Prepara dados para renderização de template
+   */
+  private prepareTemplateData(details: any): Record<string, string> {
+    const blockStartTime = new Date(details.blockStartTime);
+    const blockEndTime = new Date(details.blockEndTime);
+    const appointmentDate = new Date(details.date);
+
+    // Formata período do bloco
+    const dateFormatted = appointmentDate.toLocaleDateString('pt-BR');
+    const startTimeFormatted = blockStartTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const endTimeFormatted = blockEndTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const formattedBlockPeriod = `${dateFormatted}, das ${startTimeFormatted} às ${endTimeFormatted}`;
+
+    // Calcula duração
+    const durationMinutes = Math.round((blockEndTime.getTime() - blockStartTime.getTime()) / (1000 * 60));
+
+    // Prepara dados do responsável
+    const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
+    const patientName = details.patient.personalInfo.name;
+    const nameResponsible = responsibleInfo?.name || patientName;
+
+    return {
+      patientName,
+      nameResponsible,
+      clinicName: details.clinic.name,
+      professionalName: details.professional.user.name,
+      formattedBlockPeriod,
+      address: details.clinic.address || '',
+      location: details.location || '',
+      clinicPhone: details.clinic.phone,
+      appointmentDate: dateFormatted,
+      appointmentTime: startTimeFormatted,
+      duration: `${durationMinutes} minutos`,
+    };
   }
 
   private generatePhoneVariations(phone: string): string[] {
