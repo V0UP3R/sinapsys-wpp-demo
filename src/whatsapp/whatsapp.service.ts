@@ -207,6 +207,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           browser: Browsers.macOS('Desktop'),
           logger: pino({ level: 'silent' }) as any,
           version: [2, 3000, 1028401180] as [number, number, number],
+          syncFullHistory: true,
           getMessage: async (key) => {
             if (store) {
               try {
@@ -243,13 +244,16 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
         sock.ev.on('creds.update', saveCreds);
 
-        sock.ev.on('messages.upsert', async (m) => {
-          // Apenas processa mensagens novas (notify) para evitar duplicidade com append
-          if (m.type !== 'notify') return;
-
-          const msg = m.messages[0];
-          if (!msg.message || msg.key.fromMe) return;
-          await this.handleIncoming(phone, msg);
+        sock.ev.on('messages.upsert', async ({ messages }) => {
+          for (const msg of messages || []) {
+            if (!msg?.message) {
+              continue;
+            }
+            if (msg?.key?.fromMe) {
+              continue;
+            }
+            await this.handleIncoming(phone, msg);
+          }
         });
         sock.ev.on('messaging-history.set', ({ isLatest }) => {
           if (isLatest) {
@@ -301,12 +305,17 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           if (connection === 'close') {
             const statusCode = (lastDisconnect.error as Boom)?.output?.statusCode;
             const reason = (lastDisconnect?.error as any)?.data?.reason;
+            const disconnectMessage = (lastDisconnect?.error as any)?.message;
 
             this.connectingSessions.delete(phone);
             this.sessions.delete(phone);
             this.syncedSessions.delete(phone); // Limpa estado de sincronização
             await this.connRepo.update({ phoneNumber: phone }, { status: 'disconnected' });
             await this.notifyFrontendStatus({ phoneNumber: phone, status: 'disconnected', qrCodeUrl: null });
+
+            this.logger.warn(
+              `[${phone}] connection.close statusCode=${statusCode} reason=${reason || 'n/a'} message=${disconnectMessage || 'n/a'}`,
+            );
 
             if (statusCode === 405 || reason === '405') {
               this.logger.warn(`[${phone}] Erro 405 detectado. Limpando sessão completamente...`);
@@ -334,10 +343,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               this.logger.warn(`[${phone}] Conexão fechada (código: ${statusCode}), tentando reconectar em 5 segundos...`);
               setTimeout(() => this.connect(phone), 5000);
             } else {
-              this.logger.warn(`[${phone}] Desconectado (logged out). Removendo sessão permanentemente.`);
-              if (fs.existsSync(sessionPath)) {
-                fs.rmSync(sessionPath, { recursive: true, force: true });
-              }
+              this.logger.warn(
+                `[${phone}] Desconectado (logged out). Preservando sessão em disco para diagnóstico; QR pode ser solicitado novamente.`,
+              );
+              setTimeout(() => this.connect(phone), 5000);
             }
 
             if (!promiseResolved) {
@@ -529,12 +538,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     sessionQueue.isProcessing = true;
     this.logger.log(`[${phone}] Iniciando processamento da fila de mensagens.`);
 
-    // Aguarda a sincronização antes de processar mensagens em massa
-    if (!this.syncedSessions.has(phone)) {
-      this.logger.log(`[${phone}] Aguardando sincronização da sessão antes de enviar mensagens...`);
-      await this.waitForSync(phone, 30000);
-    }
-
     while (sessionQueue.queue.length > 0) {
       // Verifica se a sessão ainda existe antes de processar cada mensagem
       const sock = this.sessions.get(phone);
@@ -547,6 +550,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       if (!payload) continue;
 
       try {
+        // Só espera sincronização para envios em massa; respostas devem ser rápidas
+        if (!payload.isReply && !this.syncedSessions.has(phone)) {
+          this.logger.log(`[${phone}] Aguardando sincronização da sessão antes de enviar mensagens...`);
+          await this.waitForSync(phone, 30000);
+        }
         let finalJid: string | null = null;
 
         if (payload.skipValidation) {
@@ -712,7 +720,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     this.processedMessages.add(message.key.id);
     setTimeout(() => this.processedMessages.delete(message.key.id), 5000); // Limpa após 5 segundos
 
-    const messageContent = message.message?.conversation || message.message?.extendedTextMessage?.text;
+    const messageContent =
+      message.message?.conversation ||
+      message.message?.extendedTextMessage?.text ||
+      message.message?.ephemeralMessage?.message?.conversation ||
+      message.message?.ephemeralMessage?.message?.extendedTextMessage?.text;
 
     let fromJid = message.key.remoteJid;
 
@@ -735,7 +747,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       order: { createdAt: 'DESC' },
     });
 
-    if (!pending) return;
+    if (!pending) {
+      this.logger.warn(
+        `[${phone}] Sem pendência ativa para ${fromAsCus}. Variações: ${phoneVariations.join(', ')}`,
+      );
+      return;
+    }
 
     await this.notifyConfirmationEvent({
       appointmentId: pending.appointmentId,
@@ -750,6 +767,19 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
     const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];
+
+    const hasConfirmKeyword = confirmKeywords.some((kw) => normalizedText.includes(kw));
+    const hasCancelKeyword = cancelKeywords.some((kw) => normalizedText.includes(kw));
+
+    if (hasConfirmKeyword && !hasCancelKeyword) {
+      this.logger.log(`[${phone}] Intenção 'Confirmar' detectada por palavra-chave em "${normalizedText}"`);
+      return this.confirm(pending, phone, fromJid);
+    }
+
+    if (hasCancelKeyword && !hasConfirmKeyword) {
+      this.logger.log(`[${phone}] Intenção 'Cancelar' detectada por palavra-chave em "${normalizedText}"`);
+      return this.cancel(pending, phone, fromJid);
+    }
 
     const threshold = 2;
 
@@ -1253,21 +1283,83 @@ Esta e uma mensagem automatica.`;
    * Mapa de emojis disponíveis para renderização de templates
    */
   private readonly EMOJI_MAP: Record<string, string> = {
-    calendar: '🗓️',
-    doctor: '🧑‍⚕️',
-    location: '📍',
-    phone: '📞',
-    robot: '🤖',
-    arrow: '➡️',
+    wave: '👋',
     check: '✅',
     warning: '⚠️',
-    wave: '👋',
-    clock: '⏰',
     star: '⭐',
     heart: '❤️',
     thumbsUp: '👍',
+    thumbsDown: '👎',
+    clap: '👏',
+    pray: '🙏',
+    muscle: '💪',
+    doctor: '🧑‍⚕️',
+    nurse: '👨‍⚕️',
+    hospital: '🏥',
+    pill: '💊',
+    syringe: '💉',
+    stethoscope: '🩺',
+    thermometer: '🌡️',
+    bandage: '🩹',
+    heartPulse: '💓',
+    tooth: '🦷',
+    calendar: '🗓️',
+    clock: '⏰',
+    hourglass: '⏳',
+    alarm: '⏰',
+    watch: '⌚',
+    calendarCheck: '📅',
+    soon: '🔜',
+    timer: '⏱️',
+    phone: '📞',
+    cellphone: '📱',
+    email: '📧',
+    chat: '💬',
+    speech: '🗣️',
     bell: '🔔',
+    megaphone: '📢',
+    envelope: '✉️',
+    location: '📍',
+    house: '🏠',
+    building: '🏢',
+    mapPin: '📌',
+    compass: '🧭',
+    globe: '🌍',
     clipboard: '📋',
+    document: '📄',
+    folder: '📁',
+    pencil: '✏️',
+    key: '🔑',
+    gift: '🎁',
+    camera: '📷',
+    lightbulb: '💡',
+    book: '📖',
+    money: '💰',
+    arrow: '➡️',
+    arrowDown: '⬇️',
+    arrowUp: '⬆️',
+    checkMark: '✔️',
+    crossMark: '❌',
+    exclamation: '❗',
+    question: '❓',
+    info: 'ℹ️',
+    sparkles: '✨',
+    fire: '🔥',
+    hundred: '💯',
+    new: '🆕',
+    free: '🆓',
+    sos: '🆘',
+    smile: '😊',
+    grin: '😁',
+    wink: '😉',
+    love: '😍',
+    thinking: '🤔',
+    worried: '😟',
+    sad: '😢',
+    happy: '😃',
+    cool: '😎',
+    party: '🥳',
+    robot: '🤖',
   };
 
   /**
