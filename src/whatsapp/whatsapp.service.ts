@@ -207,6 +207,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           browser: Browsers.macOS('Desktop'),
           logger: pino({ level: 'silent' }) as any,
           version: [2, 3000, 1028401180] as [number, number, number],
+          syncFullHistory: true,
           getMessage: async (key) => {
             if (store) {
               try {
@@ -243,13 +244,16 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
         sock.ev.on('creds.update', saveCreds);
 
-        sock.ev.on('messages.upsert', async (m) => {
-          // Apenas processa mensagens novas (notify) para evitar duplicidade com append
-          if (m.type !== 'notify') return;
-
-          const msg = m.messages[0];
-          if (!msg.message || msg.key.fromMe) return;
-          await this.handleIncoming(phone, msg);
+        sock.ev.on('messages.upsert', async ({ messages }) => {
+          for (const msg of messages || []) {
+            if (!msg?.message) {
+              continue;
+            }
+            if (msg?.key?.fromMe) {
+              continue;
+            }
+            await this.handleIncoming(phone, msg);
+          }
         });
         sock.ev.on('messaging-history.set', ({ isLatest }) => {
           if (isLatest) {
@@ -301,12 +305,17 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           if (connection === 'close') {
             const statusCode = (lastDisconnect.error as Boom)?.output?.statusCode;
             const reason = (lastDisconnect?.error as any)?.data?.reason;
+            const disconnectMessage = (lastDisconnect?.error as any)?.message;
 
             this.connectingSessions.delete(phone);
             this.sessions.delete(phone);
             this.syncedSessions.delete(phone); // Limpa estado de sincronização
             await this.connRepo.update({ phoneNumber: phone }, { status: 'disconnected' });
             await this.notifyFrontendStatus({ phoneNumber: phone, status: 'disconnected', qrCodeUrl: null });
+
+            this.logger.warn(
+              `[${phone}] connection.close statusCode=${statusCode} reason=${reason || 'n/a'} message=${disconnectMessage || 'n/a'}`,
+            );
 
             if (statusCode === 405 || reason === '405') {
               this.logger.warn(`[${phone}] Erro 405 detectado. Limpando sessão completamente...`);
@@ -334,10 +343,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               this.logger.warn(`[${phone}] Conexão fechada (código: ${statusCode}), tentando reconectar em 5 segundos...`);
               setTimeout(() => this.connect(phone), 5000);
             } else {
-              this.logger.warn(`[${phone}] Desconectado (logged out). Removendo sessão permanentemente.`);
-              if (fs.existsSync(sessionPath)) {
-                fs.rmSync(sessionPath, { recursive: true, force: true });
-              }
+              this.logger.warn(
+                `[${phone}] Desconectado (logged out). Preservando sessão em disco para diagnóstico; QR pode ser solicitado novamente.`,
+              );
+              setTimeout(() => this.connect(phone), 5000);
             }
 
             if (!promiseResolved) {
@@ -529,12 +538,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     sessionQueue.isProcessing = true;
     this.logger.log(`[${phone}] Iniciando processamento da fila de mensagens.`);
 
-    // Aguarda a sincronização antes de processar mensagens em massa
-    if (!this.syncedSessions.has(phone)) {
-      this.logger.log(`[${phone}] Aguardando sincronização da sessão antes de enviar mensagens...`);
-      await this.waitForSync(phone, 30000);
-    }
-
     while (sessionQueue.queue.length > 0) {
       // Verifica se a sessão ainda existe antes de processar cada mensagem
       const sock = this.sessions.get(phone);
@@ -547,6 +550,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       if (!payload) continue;
 
       try {
+        // Só espera sincronização para envios em massa; respostas devem ser rápidas
+        if (!payload.isReply && !this.syncedSessions.has(phone)) {
+          this.logger.log(`[${phone}] Aguardando sincronização da sessão antes de enviar mensagens...`);
+          await this.waitForSync(phone, 30000);
+        }
         let finalJid: string | null = null;
 
         if (payload.skipValidation) {
@@ -712,7 +720,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     this.processedMessages.add(message.key.id);
     setTimeout(() => this.processedMessages.delete(message.key.id), 5000); // Limpa após 5 segundos
 
-    const messageContent = message.message?.conversation || message.message?.extendedTextMessage?.text;
+    const messageContent =
+      message.message?.conversation ||
+      message.message?.extendedTextMessage?.text ||
+      message.message?.ephemeralMessage?.message?.conversation ||
+      message.message?.ephemeralMessage?.message?.extendedTextMessage?.text;
 
     let fromJid = message.key.remoteJid;
 
@@ -735,7 +747,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       order: { createdAt: 'DESC' },
     });
 
-    if (!pending) return;
+    if (!pending) {
+      this.logger.warn(
+        `[${phone}] Sem pendência ativa para ${fromAsCus}. Variações: ${phoneVariations.join(', ')}`,
+      );
+      return;
+    }
 
     await this.notifyConfirmationEvent({
       appointmentId: pending.appointmentId,
@@ -750,6 +767,19 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
     const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];
+
+    const hasConfirmKeyword = confirmKeywords.some((kw) => normalizedText.includes(kw));
+    const hasCancelKeyword = cancelKeywords.some((kw) => normalizedText.includes(kw));
+
+    if (hasConfirmKeyword && !hasCancelKeyword) {
+      this.logger.log(`[${phone}] Intenção 'Confirmar' detectada por palavra-chave em "${normalizedText}"`);
+      return this.confirm(pending, phone, fromJid);
+    }
+
+    if (hasCancelKeyword && !hasConfirmKeyword) {
+      this.logger.log(`[${phone}] Intenção 'Cancelar' detectada por palavra-chave em "${normalizedText}"`);
+      return this.cancel(pending, phone, fromJid);
+    }
 
     const threshold = 2;
 
@@ -855,23 +885,41 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     try {
       const details = await this.getAppointmentDetails(conf.appointmentId);
-      const patientName = details.patient.personalInfo.name;
-      const professionalName = details.professional.user.name;
-      const clinicName = details.clinic.name;
-      const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
-      const address = details.clinic.address;
-      const clinicPhone = details.clinic.phone;
+
+      // Determina se é paciente menor (tem responsável)
       const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
-      const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
-      const greeting = responsibleInfo
-        ? `Ola, ${recipientName}! O agendamento de ${patientName} com ${professionalName} na clinica ${clinicName} esta confirmado.`
-        : `Ola, ${recipientName}! Seu agendamento com ${professionalName} na clinica ${clinicName} esta confirmado.`;
+      const isMinor = !!responsibleInfo;
+      const variant = isMinor ? 'MINOR' : 'ADULT';
 
-      const blockStartTime = new Date(details.blockStartTime);
-      const blockEndTime = new Date(details.blockEndTime);
-      const durationMinutes = (blockEndTime.getTime() - blockStartTime.getTime()) / (1000 * 60);
+      // Tenta buscar template customizado
+      const template = await this.getMessageTemplate(conf.appointmentId, 'CONFIRMATION', variant);
 
-      const confirmationMessage = `CONFIRMADO!
+      let confirmationMessage: string;
+
+      if (template && template.content) {
+        // Usa template customizado
+        const templateData = this.prepareTemplateData(details);
+        confirmationMessage = this.renderTemplate(template.content, templateData);
+        this.logger.log(`[${phone}] Usando template customizado de CONFIRMATION (${variant})`);
+      } else {
+        // Fallback para mensagem hardcoded
+        const patientName = details.patient.personalInfo.name;
+        const professionalName = details.professional.user.name;
+        const clinicName = details.clinic.name;
+        const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
+        const address = details.clinic.address;
+        const clinicPhone = details.clinic.phone;
+        const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
+        const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
+        const greeting = responsibleInfo
+          ? `Ola, ${recipientName}! O agendamento de ${patientName} com ${professionalName} na clinica ${clinicName} esta confirmado.`
+          : `Ola, ${recipientName}! Seu agendamento com ${professionalName} na clinica ${clinicName} esta confirmado.`;
+
+        const blockStartTime = new Date(details.blockStartTime);
+        const blockEndTime = new Date(details.blockEndTime);
+        const durationMinutes = (blockEndTime.getTime() - blockStartTime.getTime()) / (1000 * 60);
+
+        confirmationMessage = `CONFIRMADO!
 
 ${greeting}
 
@@ -886,6 +934,8 @@ Contato da Clinica: ${clinicPhone}
 Ate la!
 ---
 Esta e uma mensagem automatica. Por favor, nao responda.`;
+      }
+
       await this.sendMessageSimple(
         phone,
         from,
@@ -932,17 +982,35 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
 
     try {
       const details = await this.getAppointmentDetails(conf.appointmentId);
-      const patientName = details.patient.personalInfo.name;
-      const professionalName = details.professional.user.name;
-      const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
-      const clinicPhone = details.clinic.phone;
-      const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
-      const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
-      const greeting = responsibleInfo
-        ? `Ola, ${recipientName}. Conforme sua solicitacao, o agendamento de ${patientName} com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`
-        : `Ola, ${recipientName}. Conforme sua solicitacao, o agendamento com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`;
 
-      const cancellationMessage = `Agendamento Cancelado
+      // Determina se é paciente menor (tem responsável)
+      const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
+      const isMinor = !!responsibleInfo;
+      const variant = isMinor ? 'MINOR' : 'ADULT';
+
+      // Tenta buscar template customizado
+      const template = await this.getMessageTemplate(conf.appointmentId, 'CANCELLATION', variant);
+
+      let cancellationMessage: string;
+
+      if (template && template.content) {
+        // Usa template customizado
+        const templateData = this.prepareTemplateData(details);
+        cancellationMessage = this.renderTemplate(template.content, templateData);
+        this.logger.log(`[${phone}] Usando template customizado de CANCELLATION (${variant})`);
+      } else {
+        // Fallback para mensagem hardcoded
+        const patientName = details.patient.personalInfo.name;
+        const professionalName = details.professional.user.name;
+        const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
+        const clinicPhone = details.clinic.phone;
+        const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
+        const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
+        const greeting = responsibleInfo
+          ? `Ola, ${recipientName}. Conforme sua solicitacao, o agendamento de ${patientName} com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`
+          : `Ola, ${recipientName}. Conforme sua solicitacao, o agendamento com ${professionalName} no dia ${appointmentDate} foi cancelado com sucesso.`;
+
+        cancellationMessage = `Agendamento Cancelado
 
 ${greeting}
 
@@ -952,6 +1020,8 @@ Contato: ${clinicPhone}
 Esperamos ve-lo em breve.
 ---
 Esta e uma mensagem automatica.`;
+      }
+
       await this.sendMessageSimple(
         phone,
         from,
@@ -1179,6 +1249,187 @@ Esta e uma mensagem automatica.`;
       this.logger.error(`Falha ao buscar detalhes do agendamento ${id}:`, error.message);
       throw new Error('Não foi possível obter os detalhes do agendamento.');
     }
+  }
+
+  /**
+   * Busca template de mensagem customizado da API
+   * @param appointmentId ID do agendamento
+   * @param type Tipo do template: CONFIRMATION ou CANCELLATION
+   * @param variant Variante do template: ADULT ou MINOR
+   */
+  private async getMessageTemplate(
+    appointmentId: number,
+    type: 'CONFIRMATION' | 'CANCELLATION',
+    variant: 'ADULT' | 'MINOR' = 'ADULT',
+  ): Promise<{ content: any[] } | null> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(
+          `http://localhost:3001/message-template/internal/${appointmentId}/${type}?variant=${variant}`,
+          {
+            headers: { 'x-internal-api-secret': process.env.API_SECRET },
+            timeout: 5000,
+          },
+        ),
+      );
+      return response.data;
+    } catch (error) {
+      this.logger.warn(`Template ${type} (${variant}) não encontrado para agendamento ${appointmentId}, usando fallback: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Mapa de emojis disponíveis para renderização de templates
+   */
+  private readonly EMOJI_MAP: Record<string, string> = {
+    wave: '👋',
+    check: '✅',
+    warning: '⚠️',
+    star: '⭐',
+    heart: '❤️',
+    thumbsUp: '👍',
+    thumbsDown: '👎',
+    clap: '👏',
+    pray: '🙏',
+    muscle: '💪',
+    doctor: '🧑‍⚕️',
+    nurse: '👨‍⚕️',
+    hospital: '🏥',
+    pill: '💊',
+    syringe: '💉',
+    stethoscope: '🩺',
+    thermometer: '🌡️',
+    bandage: '🩹',
+    heartPulse: '💓',
+    tooth: '🦷',
+    calendar: '🗓️',
+    clock: '⏰',
+    hourglass: '⏳',
+    alarm: '⏰',
+    watch: '⌚',
+    calendarCheck: '📅',
+    soon: '🔜',
+    timer: '⏱️',
+    phone: '📞',
+    cellphone: '📱',
+    email: '📧',
+    chat: '💬',
+    speech: '🗣️',
+    bell: '🔔',
+    megaphone: '📢',
+    envelope: '✉️',
+    location: '📍',
+    house: '🏠',
+    building: '🏢',
+    mapPin: '📌',
+    compass: '🧭',
+    globe: '🌍',
+    clipboard: '📋',
+    document: '📄',
+    folder: '📁',
+    pencil: '✏️',
+    key: '🔑',
+    gift: '🎁',
+    camera: '📷',
+    lightbulb: '💡',
+    book: '📖',
+    money: '💰',
+    arrow: '➡️',
+    arrowDown: '⬇️',
+    arrowUp: '⬆️',
+    checkMark: '✔️',
+    crossMark: '❌',
+    exclamation: '❗',
+    question: '❓',
+    info: 'ℹ️',
+    sparkles: '✨',
+    fire: '🔥',
+    hundred: '💯',
+    new: '🆕',
+    free: '🆓',
+    sos: '🆘',
+    smile: '😊',
+    grin: '😁',
+    wink: '😉',
+    love: '😍',
+    thinking: '🤔',
+    worried: '😟',
+    sad: '😢',
+    happy: '😃',
+    cool: '😎',
+    party: '🥳',
+    robot: '🤖',
+  };
+
+  /**
+   * Renderiza template de mensagem com dados do agendamento
+   * @param elements Array de elementos do template
+   * @param data Dados para preenchimento dos campos
+   */
+  private renderTemplate(
+    elements: any[],
+    data: Record<string, string>,
+  ): string {
+    if (!elements || !Array.isArray(elements)) {
+      return '';
+    }
+
+    return elements
+      .map((el) => {
+        switch (el.type) {
+          case 'text':
+            return el.value || '';
+          case 'field':
+            if (!el.fieldKey) return '';
+            return data[el.fieldKey] || '';
+          case 'emoji':
+            if (!el.emoji) return '';
+            return this.EMOJI_MAP[el.emoji] || '';
+          case 'linebreak':
+            return '\n';
+          default:
+            return '';
+        }
+      })
+      .join('');
+  }
+
+  /**
+   * Prepara dados para renderização de template
+   */
+  private prepareTemplateData(details: any): Record<string, string> {
+    const blockStartTime = new Date(details.blockStartTime);
+    const blockEndTime = new Date(details.blockEndTime);
+    const appointmentDate = new Date(details.date);
+
+    // Formata período do bloco
+    const dateFormatted = appointmentDate.toLocaleDateString('pt-BR');
+    const startTimeFormatted = blockStartTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const endTimeFormatted = blockEndTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const formattedBlockPeriod = `${dateFormatted}, das ${startTimeFormatted} às ${endTimeFormatted}`;
+
+    // Calcula duração
+    const durationMinutes = Math.round((blockEndTime.getTime() - blockStartTime.getTime()) / (1000 * 60));
+
+    // Prepara dados do responsável
+    const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
+    const patientName = details.patient.personalInfo.name;
+    const nameResponsible = responsibleInfo?.name || patientName;
+
+    return {
+      patientName,
+      nameResponsible,
+      clinicName: details.clinic.name,
+      professionalName: details.professional.user.name,
+      formattedBlockPeriod,
+      address: details.clinic.address || '',
+      location: details.location || '',
+      clinicPhone: details.clinic.phone,
+      appointmentDate: dateFormatted,
+      appointmentTime: startTimeFormatted,
+      duration: `${durationMinutes} minutos`,
+    };
   }
 
   private generatePhoneVariations(phone: string): string[] {
