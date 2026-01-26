@@ -71,6 +71,19 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   // Cache de mensagens processadas para evitar duplicidade
   private processedMessages = new Set<string>();
 
+  // Controla quando o QR pode ser emitido para o frontend
+  private qrRequests = new Map<string, number>();
+  private readonly QR_REQUEST_TTL_MS = 5 * 60 * 1000;
+
+  // Cache de status para evitar spam de notificacoes ao frontend
+  private lastFrontendStatus = new Map<string, {
+    status?: string;
+    qrCodeUrl?: string | null;
+    lastSentAt: number;
+  }>();
+
+  private readonly FRONTEND_STATUS_DEDUP_MS = 30000;
+
   constructor(
     private readonly httpService: HttpService,
     @InjectRepository(PendingConfirmation)
@@ -154,6 +167,24 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     this.logger.debug(`[API:${method}] ${url}${metaSuffix}`);
   }
 
+  private requestQrForPhone(phone: string) {
+    this.qrRequests.set(phone, Date.now() + this.QR_REQUEST_TTL_MS);
+  }
+
+  private canEmitQr(phone: string): boolean {
+    const expiresAt = this.qrRequests.get(phone);
+    if (!expiresAt) return false;
+    if (Date.now() > expiresAt) {
+      this.qrRequests.delete(phone);
+      return false;
+    }
+    return true;
+  }
+
+  private clearQrRequest(phone: string) {
+    this.qrRequests.delete(phone);
+  }
+
   async onModuleInit() {
     const conns = await this.connRepo.find({ where: { status: 'connected' } });
     for (const conn of conns) {
@@ -187,10 +218,14 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     return path.join(this.SESSIONS_DIR, `session-${sanitizedPhone}`);
   }
 
-  async connect(phone: string): Promise<string | null> {
+  async connect(phone: string, options?: { requestQr?: boolean }): Promise<string | null> {
     if (this.sessions.has(phone) || this.connectingSessions.has(phone)) {
       this.logger.warn(`[${phone}] Conexão já estabelecida ou em progresso.`);
       return null;
+    }
+
+    if (options?.requestQr) {
+      this.requestQrForPhone(phone);
     }
 
     this.connectingSessions.add(phone);
@@ -247,6 +282,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           if (!promiseResolved) {
             promiseResolved = true;
             this.connectingSessions.delete(phone);
+            this.clearQrRequest(phone);
             reject(new Error(`[${phone}] Tempo esgotado para conectar.`));
           }
         }, 30000); // 30 segundos de timeout
@@ -277,7 +313,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           if (qr) {
             this.logger.log(`[${phone}] QR Code recebido.`);
             const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
+            const shouldEmitQr = this.canEmitQr(phone);
 
+            if (shouldEmitQr) {
             let conn = await this.connRepo.findOne({ where: { phoneNumber: phone } });
             if (!conn) {
               conn = this.connRepo.create({ phoneNumber: phone });
@@ -289,11 +327,14 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               status: 'connecting',
               qrCodeUrl: qrUrl,
             });
+            } else {
+              this.logger.debug(`[${phone}] QR recebido, mas nao solicitado; ignorando envio ao frontend.`);
+            }
 
             if (!promiseResolved) {
               promiseResolved = true;
               clearTimeout(timeout);
-              resolve(qrUrl);
+              resolve(shouldEmitQr ? qrUrl : null);
             }
           }
 
@@ -301,6 +342,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             this.logger.log(`[${phone}] Conexão estabelecida com sucesso!`);
             this.sessions.set(phone, sock);
             this.connectingSessions.delete(phone);
+            this.clearQrRequest(phone);
             await this.connRepo.update({ phoneNumber: phone }, { status: 'connected', qrCodeUrl: null });
             await this.notifyFrontendStatus({ phoneNumber: phone, status: 'connected', qrCodeUrl: null });
 
@@ -381,6 +423,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     this.sessions.delete(phone);
     this.messageQueues.delete(phone);
     this.syncedSessions.delete(phone); // Limpa o estado de sincronização
+    this.clearQrRequest(phone);
 
     const sessionPath = this.getSessionPath(phone);
     if (fs.existsSync(sessionPath)) {
@@ -1148,6 +1191,25 @@ Esta e uma mensagem automatica.`;
     qrCodeUrl?: string | null;
   }) {
     try {
+      const now = Date.now();
+      const last = this.lastFrontendStatus.get(payload.phoneNumber);
+      const isSameStatus = last?.status === payload.status;
+      const isSameQr = last?.qrCodeUrl === payload.qrCodeUrl;
+      const tooSoon = last ? now - last.lastSentAt < this.FRONTEND_STATUS_DEDUP_MS : false;
+
+      if (last && isSameStatus && isSameQr && tooSoon) {
+        this.logger.debug(
+          `[${payload.phoneNumber}] Ignorando status duplicado para frontend (status=${payload.status || 'n/a'}).`,
+        );
+        return;
+      }
+
+      this.lastFrontendStatus.set(payload.phoneNumber, {
+        status: payload.status,
+        qrCodeUrl: payload.qrCodeUrl,
+        lastSentAt: now,
+      });
+
       this.logApiCall('POST', 'http://localhost:3001/whatsapp/status-update', {
         phoneNumber: payload.phoneNumber,
         status: payload.status || null,
