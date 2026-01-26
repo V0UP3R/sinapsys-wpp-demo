@@ -71,6 +71,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   // Cache de mensagens processadas para evitar duplicidade
   private processedMessages = new Set<string>();
 
+  // Controla reconexao automatica por sessao
+  private reconnectAllowed = new Set<string>();
+
   // Controla quando o QR pode ser emitido para o frontend
   private qrRequests = new Map<string, number>();
   private readonly QR_REQUEST_TTL_MS = 5 * 60 * 1000;
@@ -341,6 +344,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           if (connection === 'open') {
             this.logger.log(`[${phone}] Conexão estabelecida com sucesso!`);
             this.sessions.set(phone, sock);
+            this.reconnectAllowed.add(phone);
             this.connectingSessions.delete(phone);
             this.clearQrRequest(phone);
             await this.connRepo.update({ phoneNumber: phone }, { status: 'connected', qrCodeUrl: null });
@@ -360,42 +364,52 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
             this.connectingSessions.delete(phone);
             this.sessions.delete(phone);
-            this.syncedSessions.delete(phone); // Limpa estado de sincronização
+            this.syncedSessions.delete(phone); // Limpa estado de sincronizacao
             await this.connRepo.update({ phoneNumber: phone }, { status: 'disconnected' });
             await this.notifyFrontendStatus({ phoneNumber: phone, status: 'disconnected', qrCodeUrl: null });
 
             this.logger.warn(
               `[${phone}] connection.close statusCode=${statusCode} reason=${reason || 'n/a'} message=${disconnectMessage || 'n/a'}`,
             );
+            const shouldReconnect = this.reconnectAllowed.has(phone) || this.canEmitQr(phone);
 
             if (statusCode === 405 || reason === '405') {
-              this.logger.warn(`[${phone}] Erro 405 detectado. Limpando sessão completamente...`);
+              this.logger.warn(`[${phone}] Erro 405 detectado. Limpando sessao completamente...`);
 
               if (fs.existsSync(sessionPath)) {
                 fs.rmSync(sessionPath, { recursive: true, force: true });
               }
 
-              setTimeout(() => {
-                this.logger.log(`[${phone}] Tentando reconectar após erro 405...`);
-                this.connect(phone).catch(err => {
-                  this.logger.error(`[${phone}] Falha na RECONEXÃO automática após 405: ${err.message}`);
-                });
-              }, 5000);
+              if (shouldReconnect) {
+                setTimeout(() => {
+                  this.logger.log(`[${phone}] Tentando reconectar apos erro 405...`);
+                  this.connect(phone).catch(err => {
+                    this.logger.error(`[${phone}] Falha na RECONEXAO automatica apos 405: ${err.message}`);
+                  });
+                }, 5000);
+              } else {
+                this.logger.warn(`[${phone}] Reconexao ignorada (sem solicitacao de QR).`);
+              }
 
               if (!promiseResolved) {
                 promiseResolved = true;
                 clearTimeout(timeout);
-                reject(new Error('Erro 405: Sessão corrompida. Reconexão automática iniciada.'));
+                reject(new Error('Erro 405: Sessao corrompida. Reconexao automatica iniciada.'));
               }
               return;
             }
 
+            if (!shouldReconnect) {
+              this.logger.warn(`[${phone}] Reconexao ignorada (sem solicitacao de QR).`);
+              return;
+            }
+
             if (statusCode !== DisconnectReason.loggedOut) {
-              this.logger.warn(`[${phone}] Conexão fechada (código: ${statusCode}), tentando reconectar em 5 segundos...`);
+              this.logger.warn(`[${phone}] Conexao fechada (codigo: ${statusCode}), tentando reconectar em 5 segundos...`);
               setTimeout(() => this.connect(phone), 5000);
             } else {
               this.logger.warn(
-                `[${phone}] Desconectado (logged out). Preservando sessão em disco para diagnóstico; QR pode ser solicitado novamente.`,
+                `[${phone}] Desconectado (logged out). Preservando sessao em disco para diagnostico; QR pode ser solicitado novamente.`,
               );
               setTimeout(() => this.connect(phone), 5000);
             }
@@ -406,6 +420,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               reject(lastDisconnect?.error || new Error(`Connection closed with status code: ${statusCode}`));
             }
           }
+
         });
       } catch (err) {
         this.connectingSessions.delete(phone);
