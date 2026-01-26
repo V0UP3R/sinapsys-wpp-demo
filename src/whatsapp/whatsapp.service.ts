@@ -73,6 +73,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   // Controla reconexao automatica por sessao
   private reconnectAllowed = new Set<string>();
+  private reconnectTimers = new Map<string, NodeJS.Timeout>();
+  private disabledPhones = new Set<string>();
 
   // Controla quando o QR pode ser emitido para o frontend
   private qrRequests = new Map<string, number>();
@@ -191,7 +193,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     const conns = await this.connRepo.find({ where: { status: 'connected' } });
     for (const conn of conns) {
-      this.logger.log(`Restaurando sessão para ${conn.phoneNumber}...`);
+      this.logger.log(`Restaurando sessao para ${conn.phoneNumber}...`);
+      this.reconnectAllowed.add(conn.phoneNumber);
       await this.connect(conn.phoneNumber);
     }
   }
@@ -227,8 +230,20 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
+    if (this.disabledPhones.has(phone) && !options?.requestQr) {
+      this.logger.warn(`[${phone}] Conexao bloqueada (desativada pelo usuario).`);
+      return null;
+    }
+
+    if (!options?.requestQr && !this.reconnectAllowed.has(phone)) {
+      this.logger.warn(`[${phone}] Conexao ignorada (sem solicitacao de QR).`);
+      return null;
+    }
+
+
     if (options?.requestQr) {
       this.requestQrForPhone(phone);
+      this.disabledPhones.delete(phone);
     }
 
     this.connectingSessions.add(phone);
@@ -286,6 +301,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             promiseResolved = true;
             this.connectingSessions.delete(phone);
             this.clearQrRequest(phone);
+    this.disabledPhones.add(phone);
             reject(new Error(`[${phone}] Tempo esgotado para conectar.`));
           }
         }, 30000); // 30 segundos de timeout
@@ -314,11 +330,27 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           const { connection, lastDisconnect, qr } = update;
 
           if (qr) {
-            this.logger.log(`[${phone}] QR Code recebido.`);
             const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qr)}&size=300x300`;
             const shouldEmitQr = this.canEmitQr(phone);
 
-            if (shouldEmitQr) {
+            if (!shouldEmitQr) {
+              this.logger.warn(`[${phone}] QR recebido sem solicitacao; encerrando sessao.`);
+              try {
+                sock.end(undefined);
+              } catch (e) {
+                this.logger.error(`[${phone}] Falha ao encerrar sessao: ${e.message}`);
+              }
+              this.disabledPhones.add(phone);
+              this.reconnectAllowed.delete(phone);
+              if (!promiseResolved) {
+                promiseResolved = true;
+                clearTimeout(timeout);
+                resolve(null);
+              }
+              return;
+            }
+
+            this.logger.log(`[${phone}] QR Code recebido.`);
             let conn = await this.connRepo.findOne({ where: { phoneNumber: phone } });
             if (!conn) {
               conn = this.connRepo.create({ phoneNumber: phone });
@@ -330,14 +362,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               status: 'connecting',
               qrCodeUrl: qrUrl,
             });
-            } else {
-              this.logger.debug(`[${phone}] QR recebido, mas nao solicitado; ignorando envio ao frontend.`);
-            }
 
             if (!promiseResolved) {
               promiseResolved = true;
               clearTimeout(timeout);
-              resolve(shouldEmitQr ? qrUrl : null);
+              resolve(qrUrl);
             }
           }
 
@@ -372,6 +401,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               `[${phone}] connection.close statusCode=${statusCode} reason=${reason || 'n/a'} message=${disconnectMessage || 'n/a'}`,
             );
             const shouldReconnect = this.reconnectAllowed.has(phone) || this.canEmitQr(phone);
+            if (this.disabledPhones.has(phone)) {
+              this.logger.warn(`[${phone}] Reconexao bloqueada (desativada pelo usuario).`);
+              return;
+            }
+
 
             if (statusCode === 405 || reason === '405') {
               this.logger.warn(`[${phone}] Erro 405 detectado. Limpando sessao completamente...`);
@@ -381,12 +415,19 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               }
 
               if (shouldReconnect) {
-                setTimeout(() => {
+                const existingTimer = this.reconnectTimers.get(phone);
+                if (existingTimer) {
+                  clearTimeout(existingTimer);
+                  this.reconnectTimers.delete(phone);
+                }
+                const timer = setTimeout(() => {
+                  this.reconnectTimers.delete(phone);
                   this.logger.log(`[${phone}] Tentando reconectar apos erro 405...`);
                   this.connect(phone).catch(err => {
                     this.logger.error(`[${phone}] Falha na RECONEXAO automatica apos 405: ${err.message}`);
                   });
                 }, 5000);
+                this.reconnectTimers.set(phone, timer);
               } else {
                 this.logger.warn(`[${phone}] Reconexao ignorada (sem solicitacao de QR).`);
               }
@@ -406,12 +447,30 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
             if (statusCode !== DisconnectReason.loggedOut) {
               this.logger.warn(`[${phone}] Conexao fechada (codigo: ${statusCode}), tentando reconectar em 5 segundos...`);
-              setTimeout(() => this.connect(phone), 5000);
+              const existingTimer = this.reconnectTimers.get(phone);
+              if (existingTimer) {
+                clearTimeout(existingTimer);
+                this.reconnectTimers.delete(phone);
+              }
+              const timer = setTimeout(() => {
+                this.reconnectTimers.delete(phone);
+                this.connect(phone);
+              }, 5000);
+              this.reconnectTimers.set(phone, timer);
             } else {
               this.logger.warn(
                 `[${phone}] Desconectado (logged out). Preservando sessao em disco para diagnostico; QR pode ser solicitado novamente.`,
               );
-              setTimeout(() => this.connect(phone), 5000);
+              const existingTimer = this.reconnectTimers.get(phone);
+              if (existingTimer) {
+                clearTimeout(existingTimer);
+                this.reconnectTimers.delete(phone);
+              }
+              const timer = setTimeout(() => {
+                this.reconnectTimers.delete(phone);
+                this.connect(phone);
+              }, 5000);
+              this.reconnectTimers.set(phone, timer);
             }
 
             if (!promiseResolved) {
@@ -438,7 +497,14 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     this.sessions.delete(phone);
     this.messageQueues.delete(phone);
     this.syncedSessions.delete(phone); // Limpa o estado de sincronização
+    this.reconnectAllowed.delete(phone);
+    const pendingTimer = this.reconnectTimers.get(phone);
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      this.reconnectTimers.delete(phone);
+    }
     this.clearQrRequest(phone);
+    this.disabledPhones.add(phone);
 
     const sessionPath = this.getSessionPath(phone);
     if (fs.existsSync(sessionPath)) {
