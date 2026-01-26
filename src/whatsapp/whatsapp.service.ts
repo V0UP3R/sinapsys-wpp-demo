@@ -145,6 +145,15 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private logApiCall(
+    method: 'GET' | 'POST' | 'PATCH',
+    url: string,
+    meta?: Record<string, unknown>,
+  ) {
+    const metaSuffix = meta ? ` ${JSON.stringify(meta)}` : '';
+    this.logger.debug(`[API:${method}] ${url}${metaSuffix}`);
+  }
+
   async onModuleInit() {
     const conns = await this.connRepo.find({ where: { status: 'connected' } });
     for (const conn of conns) {
@@ -840,6 +849,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        this.logApiCall('PATCH', `http://localhost:3001/appointment/block/${appointmentId}`, {
+          status,
+          reasonLack: reasonLack || null,
+          attempt,
+        });
         await firstValueFrom(
           this.httpService.patch(
             `http://localhost:3001/appointment/block/${appointmentId}`,
@@ -1070,6 +1084,11 @@ Esta e uma mensagem automatica.`;
     errorMessage?: string;
   }) {
     try {
+      this.logApiCall('POST', 'http://localhost:3001/appointment/confirmation-message/status', {
+        appointmentId: payload.appointmentId,
+        status: payload.status,
+        providerMessageId: payload.providerMessageId || null,
+      });
       await firstValueFrom(
         this.httpService.post(
           'http://localhost:3001/appointment/confirmation-message/status',
@@ -1098,6 +1117,11 @@ Esta e uma mensagem automatica.`;
     occurredAt?: string;
   }) {
     try {
+      this.logApiCall('POST', 'http://localhost:3001/appointment/confirmation-message/events', {
+        appointmentId: payload.appointmentId,
+        type: payload.type,
+        direction: payload.direction || null,
+      });
       await firstValueFrom(
         this.httpService.post(
           'http://localhost:3001/appointment/confirmation-message/events',
@@ -1124,6 +1148,11 @@ Esta e uma mensagem automatica.`;
     qrCodeUrl?: string | null;
   }) {
     try {
+      this.logApiCall('POST', 'http://localhost:3001/whatsapp/status-update', {
+        phoneNumber: payload.phoneNumber,
+        status: payload.status || null,
+        hasQrCode: Boolean(payload.qrCodeUrl),
+      });
       await firstValueFrom(
         this.httpService.post(
           'http://localhost:3001/whatsapp/status-update',
