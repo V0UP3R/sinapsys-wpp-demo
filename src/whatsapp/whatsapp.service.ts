@@ -29,6 +29,10 @@ import pino from 'pino';
 import { RedisService } from '../redis/redis.service';
 import { makeRedisStore } from './baileys-redis-store';
 import OpenAI from 'openai';
+import moment from 'moment-timezone';
+
+// Timezone padrão do sistema (fallback)
+const DEFAULT_TIMEZONE = 'America/Sao_Paulo';
 
 // Interface para a carga útil da mensagem na fila
 interface MessagePayload {
@@ -1028,10 +1032,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         this.logger.log(`[${phone}] Usando template customizado de CONFIRMATION (${variant})`);
       } else {
         // Fallback para mensagem hardcoded
+        // Usa timezone da clínica ou fallback para timezone padrão
+        const timezone = details.clinic?.timezone || DEFAULT_TIMEZONE;
+
         const patientName = details.patient.personalInfo.name;
         const professionalName = details.professional.user.name;
         const clinicName = details.clinic.name;
-        const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
+        const appointmentDate = moment(details.date).tz(timezone).format('DD/MM/YYYY');
         const address = details.clinic.address;
         const clinicPhone = details.clinic.phone;
         const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
@@ -1040,16 +1047,16 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           ? `Ola, ${recipientName}! O agendamento de ${patientName} com ${professionalName} na clinica ${clinicName} esta confirmado.`
           : `Ola, ${recipientName}! Seu agendamento com ${professionalName} na clinica ${clinicName} esta confirmado.`;
 
-        const blockStartTime = new Date(details.blockStartTime);
-        const blockEndTime = new Date(details.blockEndTime);
-        const durationMinutes = (blockEndTime.getTime() - blockStartTime.getTime()) / (1000 * 60);
+        const blockStartTime = moment(details.blockStartTime).tz(timezone);
+        const blockEndTime = moment(details.blockEndTime).tz(timezone);
+        const durationMinutes = blockEndTime.diff(blockStartTime, 'minutes');
 
         confirmationMessage = `CONFIRMADO!
 
 ${greeting}
 
 Data: ${appointmentDate}
-Horario: Das ${blockStartTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} as ${blockEndTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+Horario: Das ${blockStartTime.format('HH:mm')} as ${blockEndTime.format('HH:mm')}
 Duracao Estimada: ${durationMinutes} minutos
 Local: ${address}
 
@@ -1125,9 +1132,12 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
         this.logger.log(`[${phone}] Usando template customizado de CANCELLATION (${variant})`);
       } else {
         // Fallback para mensagem hardcoded
+        // Usa timezone da clínica ou fallback para timezone padrão
+        const timezone = details.clinic?.timezone || DEFAULT_TIMEZONE;
+
         const patientName = details.patient.personalInfo.name;
         const professionalName = details.professional.user.name;
-        const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
+        const appointmentDate = moment(details.date).tz(timezone).format('DD/MM/YYYY');
         const clinicPhone = details.clinic.phone;
         const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
         const recipientName = responsibleInfo?.name || details.patient.personalInfo.name;
@@ -1558,18 +1568,20 @@ Esta e uma mensagem automatica.`;
    * Prepara dados para renderização de template
    */
   private prepareTemplateData(details: any): Record<string, string> {
-    const blockStartTime = new Date(details.blockStartTime);
-    const blockEndTime = new Date(details.blockEndTime);
-    const appointmentDate = new Date(details.date);
+    // Usa timezone da clínica ou fallback para timezone padrão
+    const timezone = details.clinic?.timezone || DEFAULT_TIMEZONE;
+
+    const blockStartTime = moment(details.blockStartTime).tz(timezone);
+    const blockEndTime = moment(details.blockEndTime).tz(timezone);
 
     // Formata período do bloco
-    const dateFormatted = appointmentDate.toLocaleDateString('pt-BR');
-    const startTimeFormatted = blockStartTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    const endTimeFormatted = blockEndTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const dateFormatted = blockStartTime.format('DD/MM/YYYY');
+    const startTimeFormatted = blockStartTime.format('HH:mm');
+    const endTimeFormatted = blockEndTime.format('HH:mm');
     const formattedBlockPeriod = `${dateFormatted}, das ${startTimeFormatted} às ${endTimeFormatted}`;
 
     // Calcula duração
-    const durationMinutes = Math.round((blockEndTime.getTime() - blockStartTime.getTime()) / (1000 * 60));
+    const durationMinutes = blockEndTime.diff(blockStartTime, 'minutes');
 
     // Prepara dados do responsável
     const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
@@ -1619,10 +1631,13 @@ Esta e uma mensagem automatica.`;
     if (nextPending) {
       try {
         const details = await this.getAppointmentDetails(nextPending.appointmentId);
+        // Usa timezone da clínica ou fallback para timezone padrão
+        const timezone = details.clinic?.timezone || DEFAULT_TIMEZONE;
+
         const patientName = details.patient.personalInfo.name;
         const professionalName = details.professional.user.name;
-        const appointmentDate = new Date(details.date).toLocaleDateString('pt-BR');
-        const appointmentTime = new Date(details.blockStartTime).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        const appointmentDate = moment(details.date).tz(timezone).format('DD/MM/YYYY');
+        const appointmentTime = moment(details.blockStartTime).tz(timezone).format('HH:mm');
 
         const followUpMessage = `Obrigado, ${patientName}! Notamos que você também tem um agendamento com o(a) profissional ${professionalName} no dia ${appointmentDate} às ${appointmentTime} que ainda não foi respondido.
 
