@@ -901,19 +901,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
     const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];
 
-    const hasConfirmKeyword = confirmKeywords.some((kw) => normalizedText.includes(kw));
-    const hasCancelKeyword = cancelKeywords.some((kw) => normalizedText.includes(kw));
-
-    if (hasConfirmKeyword && !hasCancelKeyword) {
-      this.logger.log(`[${phone}] Intenção 'Confirmar' detectada por palavra-chave em "${normalizedText}"`);
-      return this.confirm(pending, phone, fromJid);
-    }
-
-    if (hasCancelKeyword && !hasConfirmKeyword) {
-      this.logger.log(`[${phone}] Intenção 'Cancelar' detectada por palavra-chave em "${normalizedText}"`);
-      return this.cancel(pending, phone, fromJid);
-    }
-
     const threshold = 2;
 
     // Função auxiliar para encontrar a menor distância em uma lista de palavras
