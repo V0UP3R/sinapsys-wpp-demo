@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Req } from '@nestjs/common';
+import { BadRequestException, Controller, Post, Body, UseGuards, Req } from '@nestjs/common';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { JwtAuthGuard } from '../auth/auth.guard';
 import { Public } from 'src/auth/decorators/public.decorator';
@@ -12,6 +12,9 @@ export class MessageController {
   @Post('connect')
   @UseGuards(InternalApiGuard)
   async connect(@Body() body: {phone:string}): Promise<{ qrCodeUrl: string }> {
+    if (!body?.phone) {
+      throw new BadRequestException('Campo "phone" e obrigatorio.');
+    }
     const qrCodeUrl = await this.whatsappService.connect(body.phone, { requestQr: true });
     return { qrCodeUrl };
   }
@@ -23,6 +26,15 @@ export class MessageController {
   async sendMessage(
     @Body() body: { phone:string; to: string; message: string; appointmentId: number },
   ) {
+    if (!body?.phone) {
+      throw new BadRequestException('Campo "phone" e obrigatorio.');
+    }
+    if (!body?.to) {
+      throw new BadRequestException('Campo "to" e obrigatorio.');
+    }
+    if (!body?.message) {
+      throw new BadRequestException('Campo "message" e obrigatorio.');
+    }
     await this.whatsappService.sendMessage(
       body.phone,
       body.to,
@@ -35,6 +47,9 @@ export class MessageController {
   @Post('disconnect')
   @UseGuards(InternalApiGuard)
   async disconnect(@Body() body: {phone:string}): Promise<{ success: boolean }> {
+    if (!body?.phone) {
+      throw new BadRequestException('Campo "phone" e obrigatorio.');
+    }
     await this.whatsappService.disconnect(body.phone);
     return { success: true };
   }
