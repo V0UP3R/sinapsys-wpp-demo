@@ -21,6 +21,7 @@ import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
   WAMessage,
+  WAMessageUpdate,
   WASocket,
   proto,
 } from '@whiskeysockets/baileys';
@@ -92,6 +93,21 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }>();
 
   private readonly FRONTEND_STATUS_DEDUP_MS = 30000;
+
+  // Rastreia mensagens enviadas aguardando confirmação de entrega do WhatsApp
+  private pendingDelivery = new Map<string, {
+    phone: string;
+    jid: string;
+    enqueuedAt: number;
+  }>();
+
+  // Health check intervals por sessão
+  private healthCheckIntervals = new Map<string, NodeJS.Timeout>();
+
+  // Constantes de health check
+  private readonly DELIVERY_TIMEOUT_MS = 3 * 60 * 1000;      // 3 min sem ACK = stale
+  private readonly HEALTH_CHECK_INTERVAL_MS = 2 * 60 * 1000;  // Verifica a cada 2 min
+  private readonly MAX_STALE_MESSAGES = 2;                     // 2 stale = reconectar
 
   constructor(
     private readonly httpService: HttpService,
@@ -213,6 +229,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`[${phone}] Erro ao encerrar sessão: ${e.message}`);
       }
     }
+    for (const phone of this.healthCheckIntervals.keys()) {
+      this.stopHealthCheck(phone);
+    }
+    this.pendingDelivery.clear();
     this.sessions.clear();
     this.connectingSessions.clear();
     this.messageQueues.clear();
@@ -274,6 +294,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           logger: pino({ level: 'silent' }) as any,
           version: [2, 3000, 1028401180] as [number, number, number],
           syncFullHistory: true,
+          keepAliveIntervalMs: 15000,
+          connectTimeoutMs: 60000,
           getMessage: async (key) => {
             if (store) {
               try {
@@ -330,6 +352,18 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           }
         });
 
+        sock.ev.on('messages.update', (updates: WAMessageUpdate[]) => {
+          for (const { key, update } of updates) {
+            if (key?.id && (update as any)?.status !== undefined && (update as any).status >= 2) {
+              // SERVER_ACK ou melhor = WhatsApp recebeu a mensagem
+              if (this.pendingDelivery.has(key.id)) {
+                this.logger.debug(`[${phone}] Mensagem ${key.id} confirmada pelo servidor (status=${(update as any).status}).`);
+                this.pendingDelivery.delete(key.id);
+              }
+            }
+          }
+        });
+
         sock.ev.on('connection.update', async (update) => {
           const { connection, lastDisconnect, qr } = update;
 
@@ -382,6 +416,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             this.clearQrRequest(phone);
             await this.connRepo.update({ phoneNumber: phone }, { status: 'connected', qrCodeUrl: null });
             await this.notifyFrontendStatus({ phoneNumber: phone, status: 'connected', qrCodeUrl: null });
+            this.startHealthCheck(phone);
 
             if (!promiseResolved) {
               promiseResolved = true;
@@ -398,6 +433,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             this.connectingSessions.delete(phone);
             this.sessions.delete(phone);
             this.syncedSessions.delete(phone); // Limpa estado de sincronizacao
+            this.stopHealthCheck(phone);
+            this.cleanPendingDeliveryForPhone(phone);
             await this.connRepo.update({ phoneNumber: phone }, { status: 'disconnected' });
             await this.notifyFrontendStatus({ phoneNumber: phone, status: 'disconnected', qrCodeUrl: null });
 
@@ -501,6 +538,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     this.sessions.delete(phone);
     this.messageQueues.delete(phone);
     this.syncedSessions.delete(phone); // Limpa o estado de sincronização
+    this.stopHealthCheck(phone);
+    this.cleanPendingDeliveryForPhone(phone);
     this.reconnectAllowed.delete(phone);
     const pendingTimer = this.reconnectTimers.get(phone);
     if (pendingTimer) {
@@ -649,6 +688,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         // Verifica se a mensagem foi enviada com sucesso
         if (result?.key?.id) {
           this.logger.log(`[SendRetry] Mensagem enviada com sucesso (ID: ${result.key.id})`);
+          this.pendingDelivery.set(result.key.id, {
+            phone,
+            jid,
+            enqueuedAt: Date.now(),
+          });
           return { success: true, messageId: result.key.id };
         }
 
@@ -773,6 +817,15 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
       } catch (error) {
         this.logger.error(`[Queue] Erro ao enviar mensagem da fila para ${payload.to}: ${error.message}`);
+        if (payload.appointmentId) {
+          await this.notifyConfirmationStatus({
+            appointmentId: payload.appointmentId,
+            status: 'FAILED',
+            failedAt: new Date().toISOString(),
+            recipientPhone: payload.to,
+            errorMessage: error.message || 'Erro inesperado no processamento da fila.',
+          });
+        }
       }
     }
 
@@ -1652,6 +1705,67 @@ Deseja também *confirmar* ou *cancelar* este horário?`;
         this.logger.log(`Enviada mensagem de acompanhamento para o agendamento ${nextPending.appointmentId} para o número ${from}.`);
       } catch (error) {
         this.logger.error(`Falha ao notificar próxima pendência para ${from}: ${error.message}`);
+      }
+    }
+  }
+
+  private startHealthCheck(phone: string) {
+    this.stopHealthCheck(phone);
+    const interval = setInterval(() => this.checkSessionHealth(phone), this.HEALTH_CHECK_INTERVAL_MS);
+    this.healthCheckIntervals.set(phone, interval);
+    this.logger.log(`[${phone}] Health check de entrega iniciado (a cada ${this.HEALTH_CHECK_INTERVAL_MS / 1000}s).`);
+  }
+
+  private stopHealthCheck(phone: string) {
+    const existing = this.healthCheckIntervals.get(phone);
+    if (existing) {
+      clearInterval(existing);
+      this.healthCheckIntervals.delete(phone);
+    }
+  }
+
+  private cleanPendingDeliveryForPhone(phone: string) {
+    for (const [msgId, entry] of this.pendingDelivery) {
+      if (entry.phone === phone) this.pendingDelivery.delete(msgId);
+    }
+  }
+
+  private checkSessionHealth(phone: string) {
+    const now = Date.now();
+    let staleCount = 0;
+
+    for (const [msgId, entry] of this.pendingDelivery) {
+      if (entry.phone !== phone) continue;
+      const age = now - entry.enqueuedAt;
+
+      if (age > this.DELIVERY_TIMEOUT_MS) {
+        staleCount++;
+      }
+      // Limpar entradas muito antigas (>10min) para evitar memory leak
+      if (age > 10 * 60 * 1000) {
+        this.pendingDelivery.delete(msgId);
+      }
+    }
+
+    if (staleCount >= this.MAX_STALE_MESSAGES) {
+      this.logger.warn(
+        `[${phone}] Health check: ${staleCount} mensagens sem confirmação de entrega há mais de ${this.DELIVERY_TIMEOUT_MS / 60000}min. Forçando reconexão...`
+      );
+      this.forceReconnect(phone);
+    }
+  }
+
+  private forceReconnect(phone: string) {
+    this.stopHealthCheck(phone);
+    this.cleanPendingDeliveryForPhone(phone);
+    const sock = this.sessions.get(phone);
+    if (sock) {
+      try {
+        sock.end(undefined);
+        // Dispara connection.update → close → auto-reconnect existente
+        // Auth state preservado em disco = não precisa QR code
+      } catch (e) {
+        this.logger.error(`[${phone}] Erro ao forçar reconexão: ${e.message}`);
       }
     }
   }
