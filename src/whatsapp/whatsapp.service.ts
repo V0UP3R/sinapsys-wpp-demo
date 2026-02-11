@@ -44,6 +44,15 @@ interface MessagePayload {
   skipValidation?: boolean; // NOVO: Flag para pular a validação em respostas
 }
 
+interface PendingDeliveryEntry {
+  phone: string;
+  jid: string;
+  enqueuedAt: number;
+  appointmentId?: number;
+  recipientPhone?: string;
+  messageText?: string;
+}
+
 @Injectable()
 export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private sessions = new Map<string, WASocket>();
@@ -95,11 +104,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private readonly FRONTEND_STATUS_DEDUP_MS = 30000;
 
   // Rastreia mensagens enviadas aguardando confirmação de entrega do WhatsApp
-  private pendingDelivery = new Map<string, {
-    phone: string;
-    jid: string;
-    enqueuedAt: number;
-  }>();
+  private pendingDelivery = new Map<string, PendingDeliveryEntry>();
 
   // Health check intervals por sessão
   private healthCheckIntervals = new Map<string, NodeJS.Timeout>();
@@ -259,7 +264,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    if (!options?.requestQr && !this.reconnectAllowed.has(phone)) {
+    if (
+      !options?.requestQr &&
+      !this.reconnectAllowed.has(phone) &&
+      !this.canEmitQr(phone)
+    ) {
       this.logger.warn(`[${phone}] Conexao ignorada (sem solicitacao de QR).`);
       return null;
     }
@@ -354,12 +363,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
         sock.ev.on('messages.update', (updates: WAMessageUpdate[]) => {
           for (const { key, update } of updates) {
-            if (key?.id && (update as any)?.status !== undefined && (update as any).status >= 2) {
+            const status = (update as any)?.status;
+            if (key?.id && status !== undefined && status >= 2) {
               // SERVER_ACK ou melhor = WhatsApp recebeu a mensagem
-              if (this.pendingDelivery.has(key.id)) {
-                this.logger.debug(`[${phone}] Mensagem ${key.id} confirmada pelo servidor (status=${(update as any).status}).`);
-                this.pendingDelivery.delete(key.id);
-              }
+              void this.handleDeliveryAcknowledged(phone, key.id, status);
             }
           }
         });
@@ -417,6 +424,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             await this.connRepo.update({ phoneNumber: phone }, { status: 'connected', qrCodeUrl: null });
             await this.notifyFrontendStatus({ phoneNumber: phone, status: 'connected', qrCodeUrl: null });
             this.startHealthCheck(phone);
+            const sessionQueue = this.messageQueues.get(phone);
+            if (sessionQueue && sessionQueue.queue.length > 0 && !sessionQueue.isProcessing) {
+              this.logger.log(
+                `[${phone}] Retomando fila apos reconexao com ${sessionQueue.queue.length} mensagens pendentes.`,
+              );
+              void this.processMessageQueue(phone);
+            }
 
             if (!promiseResolved) {
               promiseResolved = true;
@@ -434,7 +448,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             this.sessions.delete(phone);
             this.syncedSessions.delete(phone); // Limpa estado de sincronizacao
             this.stopHealthCheck(phone);
-            this.cleanPendingDeliveryForPhone(phone);
             await this.connRepo.update({ phoneNumber: phone }, { status: 'disconnected' });
             await this.notifyFrontendStatus({ phoneNumber: phone, status: 'disconnected', qrCodeUrl: null });
 
@@ -444,6 +457,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             const shouldReconnect = this.reconnectAllowed.has(phone) || this.canEmitQr(phone);
             if (this.disabledPhones.has(phone)) {
               this.logger.warn(`[${phone}] Reconexao bloqueada (desativada pelo usuario).`);
+              await this.failPendingDeliveryForPhone(
+                phone,
+                'Sessao desconectada e reconexao desativada antes da confirmacao de entrega.',
+              );
               return;
             }
 
@@ -483,11 +500,25 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
             if (!shouldReconnect) {
               this.logger.warn(`[${phone}] Reconexao ignorada (sem solicitacao de QR).`);
+              await this.failPendingDeliveryForPhone(
+                phone,
+                'Sessao desconectada sem reconexao antes da confirmacao de entrega.',
+              );
               return;
             }
 
             if (statusCode !== DisconnectReason.loggedOut) {
-              this.logger.warn(`[${phone}] Conexao fechada (codigo: ${statusCode}), tentando reconectar em 5 segundos...`);
+              const reconnectDelayMs =
+                statusCode === DisconnectReason.restartRequired ? 1000 : 5000;
+              if (statusCode === DisconnectReason.restartRequired) {
+                this.logger.warn(
+                  `[${phone}] Stream pediu restartRequired (515). Tentando reconectar rapidamente...`,
+                );
+              } else {
+                this.logger.warn(
+                  `[${phone}] Conexao fechada (codigo: ${statusCode}), tentando reconectar em ${reconnectDelayMs / 1000} segundos...`,
+                );
+              }
               const existingTimer = this.reconnectTimers.get(phone);
               if (existingTimer) {
                 clearTimeout(existingTimer);
@@ -496,7 +527,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               const timer = setTimeout(() => {
                 this.reconnectTimers.delete(phone);
                 this.connect(phone);
-              }, 5000);
+              }, reconnectDelayMs);
               this.reconnectTimers.set(phone, timer);
             } else {
               this.logger.warn(
@@ -539,7 +570,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     this.messageQueues.delete(phone);
     this.syncedSessions.delete(phone); // Limpa o estado de sincronização
     this.stopHealthCheck(phone);
-    this.cleanPendingDeliveryForPhone(phone);
+    await this.failPendingDeliveryForPhone(
+      phone,
+      'Sessao desconectada antes da confirmacao de entrega.',
+    );
     this.reconnectAllowed.delete(phone);
     const pendingTimer = this.reconnectTimers.get(phone);
     if (pendingTimer) {
@@ -688,11 +722,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         // Verifica se a mensagem foi enviada com sucesso
         if (result?.key?.id) {
           this.logger.log(`[SendRetry] Mensagem enviada com sucesso (ID: ${result.key.id})`);
-          this.pendingDelivery.set(result.key.id, {
-            phone,
-            jid,
-            enqueuedAt: Date.now(),
-          });
           return { success: true, messageId: result.key.id };
         }
 
@@ -791,23 +820,43 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               occurredAt: new Date().toISOString(),
             });
           }
-        } else if (payload.appointmentId) {
-          await this.notifyConfirmationStatus({
+        } else {
+          if (!sendResult.messageId) {
+            if (payload.appointmentId) {
+              await this.notifyConfirmationStatus({
+                appointmentId: payload.appointmentId,
+                status: 'FAILED',
+                failedAt: new Date().toISOString(),
+                recipientPhone: payload.to,
+                errorMessage: 'Mensagem enviada sem ID de provedor.',
+              });
+              await this.notifyConfirmationEvent({
+                appointmentId: payload.appointmentId,
+                type: 'FAILED',
+                direction: 'OUTGOING',
+                messageText: payload.text,
+                phone: payload.to,
+                errorMessage: 'Mensagem enviada sem ID de provedor.',
+                occurredAt: new Date().toISOString(),
+              });
+            }
+            continue;
+          }
+
+          this.pendingDelivery.set(sendResult.messageId, {
+            phone,
+            jid: finalJid,
+            enqueuedAt: Date.now(),
             appointmentId: payload.appointmentId,
-            status: 'SENT',
-            sentAt: new Date().toISOString(),
             recipientPhone: payload.to,
-            providerMessageId: sendResult.messageId,
-          });
-          await this.notifyConfirmationEvent({
-            appointmentId: payload.appointmentId,
-            type: 'SENT',
-            direction: 'OUTGOING',
             messageText: payload.text,
-            phone: payload.to,
-            providerMessageId: sendResult.messageId,
-            occurredAt: new Date().toISOString(),
           });
+
+          if (payload.appointmentId) {
+            this.logger.log(
+              `[Queue] Mensagem ${sendResult.messageId} do agendamento ${payload.appointmentId} aguardando ACK do WhatsApp.`,
+            );
+          }
         }
 
         const interval = this.getRandomInterval(payload.isReply);
@@ -824,6 +873,15 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             failedAt: new Date().toISOString(),
             recipientPhone: payload.to,
             errorMessage: error.message || 'Erro inesperado no processamento da fila.',
+          });
+          await this.notifyConfirmationEvent({
+            appointmentId: payload.appointmentId,
+            type: 'FAILED',
+            direction: 'OUTGOING',
+            messageText: payload.text,
+            phone: payload.to,
+            errorMessage: error.message || 'Erro inesperado no processamento da fila.',
+            occurredAt: new Date().toISOString(),
           });
         }
       }
@@ -1248,6 +1306,40 @@ Esta e uma mensagem automatica.`;
     });
   }
 
+  private async postInternalApiWithRetry(
+    endpoint: string,
+    payload: unknown,
+    contextLabel: string,
+    logMeta: Record<string, unknown>,
+    maxAttempts = 3,
+  ): Promise<boolean> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        this.logApiCall('POST', endpoint, {
+          ...logMeta,
+          attempt,
+          maxAttempts,
+        });
+        await firstValueFrom(
+          this.httpService.post(endpoint, payload, {
+            headers: { 'x-internal-api-secret': process.env.API_SECRET },
+            timeout: this.HTTP_TIMEOUT,
+          }),
+        );
+        return true;
+      } catch (error) {
+        const baseMessage = `${contextLabel} (tentativa ${attempt}/${maxAttempts})`;
+        if (attempt === maxAttempts) {
+          this.logger.error(`${baseMessage}: ${error.message}`);
+          return false;
+        }
+        this.logger.warn(`${baseMessage}: ${error.message}. Tentando novamente...`);
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+      }
+    }
+    return false;
+  }
+
   private async notifyConfirmationStatus(payload: {
     appointmentId: number;
     status: 'SENT' | 'FAILED';
@@ -1257,27 +1349,16 @@ Esta e uma mensagem automatica.`;
     recipientPhone?: string;
     errorMessage?: string;
   }) {
-    try {
-      this.logApiCall('POST', 'http://localhost:3001/appointment/confirmation-message/status', {
+    await this.postInternalApiWithRetry(
+      'http://localhost:3001/appointment/confirmation-message/status',
+      payload,
+      `Falha ao atualizar status de confirmacao do agendamento ${payload.appointmentId}`,
+      {
         appointmentId: payload.appointmentId,
         status: payload.status,
         providerMessageId: payload.providerMessageId || null,
-      });
-      await firstValueFrom(
-        this.httpService.post(
-          'http://localhost:3001/appointment/confirmation-message/status',
-          payload,
-          {
-            headers: { 'x-internal-api-secret': process.env.API_SECRET },
-            timeout: this.HTTP_TIMEOUT,
-          },
-        ),
-      );
-    } catch (error) {
-      this.logger.error(
-        `Falha ao atualizar status de confirmacao do agendamento ${payload.appointmentId}: ${error.message}`,
-      );
-    }
+      },
+    );
   }
 
   private async notifyConfirmationEvent(payload: {
@@ -1290,27 +1371,16 @@ Esta e uma mensagem automatica.`;
     errorMessage?: string;
     occurredAt?: string;
   }) {
-    try {
-      this.logApiCall('POST', 'http://localhost:3001/appointment/confirmation-message/events', {
+    await this.postInternalApiWithRetry(
+      'http://localhost:3001/appointment/confirmation-message/events',
+      payload,
+      `Falha ao registrar evento de confirmacao do agendamento ${payload.appointmentId}`,
+      {
         appointmentId: payload.appointmentId,
         type: payload.type,
         direction: payload.direction || null,
-      });
-      await firstValueFrom(
-        this.httpService.post(
-          'http://localhost:3001/appointment/confirmation-message/events',
-          payload,
-          {
-            headers: { 'x-internal-api-secret': process.env.API_SECRET },
-            timeout: this.HTTP_TIMEOUT,
-          },
-        ),
-      );
-    } catch (error) {
-      this.logger.error(
-        `Falha ao registrar evento de confirmacao do agendamento ${payload.appointmentId}: ${error.message}`,
-      );
-    }
+      },
+    );
   }
 
 
@@ -1709,9 +1779,80 @@ Deseja também *confirmar* ou *cancelar* este horário?`;
     }
   }
 
+  private async handleDeliveryAcknowledged(
+    phone: string,
+    messageId: string,
+    status: number,
+  ) {
+    const delivery = this.pendingDelivery.get(messageId);
+    if (!delivery) {
+      return;
+    }
+
+    this.pendingDelivery.delete(messageId);
+    this.logger.debug(
+      `[${phone}] Mensagem ${messageId} confirmada pelo servidor (status=${status}).`,
+    );
+
+    if (!delivery.appointmentId) {
+      return;
+    }
+
+    await this.notifyConfirmationStatus({
+      appointmentId: delivery.appointmentId,
+      status: 'SENT',
+      sentAt: new Date().toISOString(),
+      recipientPhone: delivery.recipientPhone,
+      providerMessageId: messageId,
+    });
+
+    await this.notifyConfirmationEvent({
+      appointmentId: delivery.appointmentId,
+      type: 'SENT',
+      direction: 'OUTGOING',
+      messageText: delivery.messageText,
+      phone: delivery.recipientPhone,
+      providerMessageId: messageId,
+      occurredAt: new Date().toISOString(),
+    });
+  }
+
+  private async failPendingDeliveryForPhone(phone: string, reason: string) {
+    const entries = Array.from(this.pendingDelivery.entries());
+    for (const [messageId, entry] of entries) {
+      if (entry.phone !== phone) continue;
+
+      if (entry.appointmentId) {
+        await this.notifyConfirmationStatus({
+          appointmentId: entry.appointmentId,
+          status: 'FAILED',
+          failedAt: new Date().toISOString(),
+          recipientPhone: entry.recipientPhone,
+          providerMessageId: messageId,
+          errorMessage: reason,
+        });
+
+        await this.notifyConfirmationEvent({
+          appointmentId: entry.appointmentId,
+          type: 'FAILED',
+          direction: 'OUTGOING',
+          messageText: entry.messageText,
+          phone: entry.recipientPhone,
+          providerMessageId: messageId,
+          errorMessage: reason,
+          occurredAt: new Date().toISOString(),
+        });
+      }
+
+      this.pendingDelivery.delete(messageId);
+    }
+  }
+
   private startHealthCheck(phone: string) {
     this.stopHealthCheck(phone);
-    const interval = setInterval(() => this.checkSessionHealth(phone), this.HEALTH_CHECK_INTERVAL_MS);
+    const interval = setInterval(() => {
+      void this.checkSessionHealth(phone);
+    }, this.HEALTH_CHECK_INTERVAL_MS);
     this.healthCheckIntervals.set(phone, interval);
     this.logger.log(`[${phone}] Health check de entrega iniciado (a cada ${this.HEALTH_CHECK_INTERVAL_MS / 1000}s).`);
   }
@@ -1724,13 +1865,7 @@ Deseja também *confirmar* ou *cancelar* este horário?`;
     }
   }
 
-  private cleanPendingDeliveryForPhone(phone: string) {
-    for (const [msgId, entry] of this.pendingDelivery) {
-      if (entry.phone === phone) this.pendingDelivery.delete(msgId);
-    }
-  }
-
-  private checkSessionHealth(phone: string) {
+  private async checkSessionHealth(phone: string) {
     const now = Date.now();
     let staleCount = 0;
 
@@ -1743,6 +1878,26 @@ Deseja também *confirmar* ou *cancelar* este horário?`;
       }
       // Limpar entradas muito antigas (>10min) para evitar memory leak
       if (age > 10 * 60 * 1000) {
+        if (entry.appointmentId) {
+          await this.notifyConfirmationStatus({
+            appointmentId: entry.appointmentId,
+            status: 'FAILED',
+            failedAt: new Date().toISOString(),
+            recipientPhone: entry.recipientPhone,
+            providerMessageId: msgId,
+            errorMessage: 'Timeout aguardando confirmacao de entrega do WhatsApp.',
+          });
+          await this.notifyConfirmationEvent({
+            appointmentId: entry.appointmentId,
+            type: 'FAILED',
+            direction: 'OUTGOING',
+            messageText: entry.messageText,
+            phone: entry.recipientPhone,
+            providerMessageId: msgId,
+            errorMessage: 'Timeout aguardando confirmacao de entrega do WhatsApp.',
+            occurredAt: new Date().toISOString(),
+          });
+        }
         this.pendingDelivery.delete(msgId);
       }
     }
@@ -1757,7 +1912,6 @@ Deseja também *confirmar* ou *cancelar* este horário?`;
 
   private forceReconnect(phone: string) {
     this.stopHealthCheck(phone);
-    this.cleanPendingDeliveryForPhone(phone);
     const sock = this.sessions.get(phone);
     if (sock) {
       try {
