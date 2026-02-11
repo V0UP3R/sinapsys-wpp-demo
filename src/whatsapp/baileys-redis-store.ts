@@ -17,23 +17,67 @@ export const makeRedisStore = (config: RedisStoreConfig) => {
 
   const getKey = (key: string) => `${prefix}${key}`;
 
+  const buildJidCandidates = (jid?: string): string[] => {
+    if (!jid) return [];
+
+    const set = new Set<string>();
+    const normalized = jid.replace('@s.whatsapp.net', '@c.us');
+    set.add(jid);
+    set.add(normalized);
+
+    const user = normalized.split('@')[0];
+    if (/^\d+$/.test(user)) {
+      set.add(`${user}@c.us`);
+      set.add(`${user}@s.whatsapp.net`);
+      set.add(`${user}@lid`);
+    }
+
+    return Array.from(set);
+  };
+
   const saveMessage = async (jid: string, message: WAMessage) => {
+    const messageId = message?.key?.id;
+    if (!messageId) return;
+
     try {
-      const key = getKey(`msg:${jid}:${message.key.id}`);
-      // Use set with EX (expiration) to handle TTL
-      await redis.set(key, JSON.stringify(message), 'EX', ttl);
+      const payload = JSON.stringify(message);
+
+      // Indexa por JID (incluindo variações LID/PN) para facilitar retries.
+      const jidCandidates = buildJidCandidates(jid);
+      for (const candidate of jidCandidates) {
+        const key = getKey(`msg:${candidate}:${messageId}`);
+        await redis.set(key, payload, 'EX', ttl);
+      }
+
+      // Index global por ID como fallback quando o JID muda.
+      await redis.set(getKey(`msgById:${messageId}`), payload, 'EX', ttl);
     } catch (error) {
       logger?.error(`Failed to save message to Redis: ${error.message}`);
     }
   };
 
-  const loadMessage = async (jid: string, id: string): Promise<WAMessage | undefined> => {
+  const loadMessage = async (
+    jid: string | undefined,
+    id: string | undefined,
+    ...extraJids: Array<string | undefined>
+  ): Promise<WAMessage | undefined> => {
+    if (!id) return undefined;
+
     try {
-      const key = getKey(`msg:${jid}:${id}`);
-      const data = await redis.get(key);
-      if (data) {
-        // Parse the JSON string back to WAMessage
-        // Note: Protobuf messages might lose some prototype methods but data should be there
+      const candidateKeys = new Set<string>();
+
+      for (const candidateJid of [jid, ...extraJids]) {
+        for (const expanded of buildJidCandidates(candidateJid)) {
+          candidateKeys.add(getKey(`msg:${expanded}:${id}`));
+        }
+      }
+
+      // Fallback principal quando há mismatch de JID (ex.: @lid x @s.whatsapp.net).
+      candidateKeys.add(getKey(`msgById:${id}`));
+
+      for (const key of candidateKeys) {
+        const data = await redis.get(key);
+        if (!data) continue;
         return JSON.parse(data);
       }
     } catch (error) {
@@ -67,8 +111,16 @@ export const makeRedisStore = (config: RedisStoreConfig) => {
   const bind = (ev: BaileysEventEmitter) => {
     ev.on('messages.upsert', async ({ messages }) => {
       for (const msg of messages) {
-        const jid = msg.key.remoteJid;
-        if (jid) {
+        const jids = new Set<string>(
+          [
+            msg?.key?.remoteJid,
+            (msg?.key as any)?.remoteJidAlt,
+            msg?.key?.participant,
+            (msg?.key as any)?.participantAlt,
+          ].filter(Boolean) as string[],
+        );
+
+        for (const jid of jids) {
           await saveMessage(jid, msg);
         }
       }

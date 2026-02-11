@@ -19,6 +19,7 @@ import * as util from 'util';
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  fetchLatestBaileysVersion,
   useMultiFileAuthState,
   WAMessage,
   WAMessageUpdate,
@@ -61,6 +62,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WhatsappService.name);
   private readonly openai?: OpenAI;
   private readonly SESSIONS_DIR = path.join(process.cwd(), '.baileys_auth');
+  private readonly DEFAULT_WA_VERSION: [number, number, number] = [2, 3000, 1028401180];
+  private cachedWaVersion?: [number, number, number];
 
   // Gerenciador de filas de mensagens para controlar o fluxo de envio
   private messageQueues = new Map<string, {
@@ -156,9 +159,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         lowerMsg.includes('sessionentry') ||
         lowerMsg.includes('closing session') ||
         lowerMsg.includes('closing open session') ||
+        lowerMsg.includes('closing stale open session') ||
         lowerMsg.includes('stream errored out') ||
         lowerMsg.includes('stream:error') ||
-        lowerMsg.includes('Closing stale')
+        lowerMsg.includes('restart required')
       );
     };
 
@@ -195,6 +199,30 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   ) {
     const metaSuffix = meta ? ` ${JSON.stringify(meta)}` : '';
     this.logger.debug(`[API:${method}] ${url}${metaSuffix}`);
+  }
+
+  private async getSocketVersion(): Promise<[number, number, number]> {
+    if (this.cachedWaVersion) {
+      return this.cachedWaVersion;
+    }
+
+    try {
+      const latest = await fetchLatestBaileysVersion();
+      if (latest?.version?.length === 3) {
+        this.cachedWaVersion = latest.version as [number, number, number];
+        this.logger.log(
+          `[WA] Usando versão ${this.cachedWaVersion.join('.')} (isLatest=${latest.isLatest}).`,
+        );
+        return this.cachedWaVersion;
+      }
+    } catch (error) {
+      this.logger.warn(
+        `[WA] Falha ao buscar versão mais recente. Usando fallback ${this.DEFAULT_WA_VERSION.join('.')}: ${error.message}`,
+      );
+    }
+
+    this.cachedWaVersion = this.DEFAULT_WA_VERSION;
+    return this.cachedWaVersion;
   }
 
   private requestQrForPhone(phone: string) {
@@ -298,19 +326,26 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           logger: this.logger,
           prefix: `wa:${phone}:`,
         });
+        const socketVersion = await this.getSocketVersion();
 
         const sock = makeWASocket({
           auth: state,
           browser: Browsers.macOS('Desktop'),
           logger: pino({ level: 'silent' }) as any,
-          version: [2, 3000, 1028401180] as [number, number, number],
+          version: socketVersion,
           syncFullHistory: true,
           keepAliveIntervalMs: 15000,
           connectTimeoutMs: 60000,
           getMessage: async (key) => {
             if (store) {
               try {
-                const msg = await store.loadMessage(key.remoteJid, key.id);
+                const msg = await store.loadMessage(
+                  key.remoteJid,
+                  key.id,
+                  (key as any)?.remoteJidAlt,
+                  key.participant,
+                  (key as any)?.participantAlt,
+                );
                 return msg?.message || undefined;
               } catch (error) {
                 return undefined;
@@ -800,6 +835,19 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           continue;
         }
 
+        if (payload.appointmentId) {
+          try {
+            await this.pendingRepo.update(
+              { appointmentId: payload.appointmentId },
+              { phone: this.normalizeJidForPending(finalJid) },
+            );
+          } catch (error) {
+            this.logger.warn(
+              `[Queue] Falha ao atualizar pendencia ${payload.appointmentId} para JID ${finalJid}: ${error.message}`,
+            );
+          }
+        }
+
         this.logger.log(`[Queue] Enviando mensagem para ${finalJid} a partir da fila.`);
 
         const sendResult = await this.sendMessageWithRetry(phone, finalJid, payload.text, 3);
@@ -910,6 +958,45 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     return cleaned;
   }
 
+  private normalizeJidForPending(value?: string): string {
+    if (!value) return '';
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+
+    if (trimmed.includes('@')) {
+      return trimmed.replace('@s.whatsapp.net', '@c.us');
+    }
+
+    return trimmed.replace(/\D/g, '');
+  }
+
+  private buildPendingLookupCandidates(values: Array<string | undefined>): string[] {
+    const candidates = new Set<string>();
+
+    for (const raw of values) {
+      const normalized = this.normalizeJidForPending(raw);
+      if (!normalized) continue;
+
+      candidates.add(normalized);
+
+      if (!normalized.includes('@')) {
+        for (const variation of this.generatePhoneVariations(normalized)) {
+          candidates.add(variation);
+        }
+        continue;
+      }
+
+      const userPart = normalized.split('@')[0];
+      if (/^\d+$/.test(userPart)) {
+        for (const variation of this.generatePhoneVariations(userPart)) {
+          candidates.add(variation);
+        }
+      }
+    }
+
+    return Array.from(candidates);
+  }
+
   async sendMessage(
     phone: string,
     to: string,
@@ -936,7 +1023,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     // Salva a pendência somente após o enfileiramento ter sucesso
     const cleanedTo = to.replace(/\D/g, '');
-    const formattedPending = `${cleanedTo}@c.us`;
+    const normalizedTarget = this.normalizeJidForPending(to);
+    const formattedPending = normalizedTarget || `${cleanedTo}@c.us`;
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 6 * 60 * 60 * 1000);
@@ -993,8 +1081,14 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     if (!messageContent || !fromJid) return;
     this.logger.log(`[${phone}] Recebido de ${fromJid}: ${messageContent}`);
 
-    const fromAsCus = fromJid.replace('@s.whatsapp.net', '@c.us');
-    const phoneVariations = this.generatePhoneVariations(fromAsCus);
+    const phoneVariations = this.buildPendingLookupCandidates([
+      fromJid,
+      key.remoteJid,
+      key.participant,
+      (key as any)?.remoteJidAlt,
+      (key as any)?.participantAlt,
+    ]);
+    const canonicalFrom = this.normalizeJidForPending(fromJid);
 
     const pending = await this.pendingRepo.findOne({
       where: { phone: In(phoneVariations), expiresAt: MoreThan(new Date()) },
@@ -1003,7 +1097,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     if (!pending) {
       this.logger.warn(
-        `[${phone}] Sem pendência ativa para ${fromAsCus}. Variações: ${phoneVariations.join(', ')}`,
+        `[${phone}] Sem pendência ativa para ${canonicalFrom || fromJid}. Variações: ${phoneVariations.join(', ')}`,
       );
       return;
     }
@@ -1013,7 +1107,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       type: 'INCOMING',
       direction: 'INCOMING',
       messageText: messageContent,
-      phone: fromAsCus,
+      phone: canonicalFrom || fromJid,
       occurredAt: new Date().toISOString(),
     });
 
@@ -1734,23 +1828,26 @@ Esta e uma mensagem automatica.`;
 
   private generatePhoneVariations(phone: string): string[] {
     const normalizedPhone = phone.replace(/\D/g, '');
-    if (normalizedPhone.length < 11) return [phone, `${phone}@c.us`];
+    if (!normalizedPhone) return [phone];
 
     const withoutNine = normalizedPhone.replace(/^(\d{4})(9?)(\d{8})$/, '$1$3');
     const withNine = normalizedPhone.replace(/^(\d{4})(\d{8})$/, '$19$2');
 
-    return [
+    return Array.from(new Set([
       `${withoutNine}@c.us`,
       `${withNine}@c.us`,
+      `${withoutNine}@s.whatsapp.net`,
+      `${withNine}@s.whatsapp.net`,
+      `${withoutNine}@lid`,
+      `${withNine}@lid`,
       withoutNine,
       withNine,
       phone,
-    ];
+    ]));
   }
 
   private async checkAndNotifyNextPendingAppointment(phone: string, from: string) {
-    const fromAsCus = from.replace('@s.whatsapp.net', '@c.us');
-    const phoneVariations = this.generatePhoneVariations(fromAsCus);
+    const phoneVariations = this.buildPendingLookupCandidates([from]);
 
     const nextPending = await this.pendingRepo.findOne({
       where: { phone: In(phoneVariations), expiresAt: MoreThan(new Date()) },
