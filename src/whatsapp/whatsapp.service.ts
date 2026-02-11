@@ -277,6 +277,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     if (options?.requestQr) {
       this.requestQrForPhone(phone);
       this.disabledPhones.delete(phone);
+      // Permite reconexao automatica mesmo antes de chegar em "connection=open".
+      this.reconnectAllowed.add(phone);
     }
 
     this.connectingSessions.add(phone);
@@ -336,7 +338,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             promiseResolved = true;
             this.connectingSessions.delete(phone);
             this.clearQrRequest(phone);
-    this.disabledPhones.add(phone);
+            this.reconnectAllowed.delete(phone);
+            this.disabledPhones.add(phone);
             reject(new Error(`[${phone}] Tempo esgotado para conectar.`));
           }
         }, 30000); // 30 segundos de timeout
@@ -555,6 +558,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         });
       } catch (err) {
         this.connectingSessions.delete(phone);
+        this.reconnectAllowed.delete(phone);
         this.logger.error(`[${phone}] Erro ao conectar: ${err.message}`);
         reject(err);
       }
@@ -976,10 +980,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     let fromJid = message.key.remoteJid;
 
-    const key = message.key
+    const key = message.key;
 
-    if (key.senderPn) {
-      fromJid = key.senderPn;
+    if (key.participantAlt) {
+      fromJid = key.participantAlt;
+    } else if (key.remoteJidAlt) {
+      fromJid = key.remoteJidAlt;
     } else if (key.participant) {
       fromJid = key.participant;
     }

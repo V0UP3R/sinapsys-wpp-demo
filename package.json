@@ -34,9 +34,10 @@
     "@nestjs/schedule": "^6.0.0",
     "@nestjs/typeorm": "^11.0.0",
     "@types/ioredis": "^4.28.10",
-    "@whiskeysockets/baileys": "6.7.21",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "crypto-js": "^4.2.0",
     "ioredis": "^5.8.2",
+    "moment-timezone": "^0.5.46",
     "node-nlp": "^5.0.0-alpha.5",
     "openai": "^4.104.0",
     "passport-jwt": "^4.0.1",
@@ -45,7 +46,6 @@
     "pino-pretty": "^13.1.1",
     "puppeteer": "^24.10.0",
     "reflect-metadata": "^0.2.2",
-    "moment-timezone": "^0.5.46",
     "rxjs": "^7.8.2",
     "typeorm": "^0.3.24",
     "venom-bot": "^5.3.0",
@@ -91,6 +91,9 @@
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
+    "moduleNameMapper": {
+      "^src/(.*)$": "<rootDir>/$1"
+    },
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
   }
