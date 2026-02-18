@@ -42,7 +42,8 @@ interface MessagePayload {
   text: string;
   isReply: boolean;
   appointmentId?: number;
-  skipValidation?: boolean; // NOVO: Flag para pular a validação em respostas
+  skipValidation?: boolean; // Flag para pular a validação em respostas
+  createPendingConfirmation?: boolean; // Flag para criar PendingConfirmation após envio efetivo
 }
 
 interface PendingDeliveryEntry {
@@ -70,6 +71,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     queue: MessagePayload[];
     isProcessing: boolean;
   }>();
+
+  // Duração da janela de resposta do PendingConfirmation (em ms)
+  private readonly PENDING_CONFIRMATION_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
 
   // Constantes para o intervalo de envio de RESPOSTAS INTERATIVAS
   private readonly MIN_REPLY_INTERVAL = 2000; // 2 segundos
@@ -909,6 +913,16 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               `[Queue] Mensagem ${sendResult.messageId} do agendamento ${payload.appointmentId} aguardando ACK do WhatsApp.`,
             );
           }
+
+          // Cria PendingConfirmation APÓS envio efetivo (não no enfileiramento)
+          // para que a janela de resposta de 6h comece a contar a partir da entrega real
+          if (payload.createPendingConfirmation) {
+            await this.createPendingConfirmationAfterSend(
+              phone,
+              payload.to,
+              payload.appointmentId,
+            );
+          }
         }
 
         const interval = this.getRandomInterval(payload.isReply);
@@ -1015,19 +1029,34 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       isReply: false,
       skipValidation: false,
       appointmentId,
+      createPendingConfirmation: true,
     });
     if (!enqueued) {
       this.logger.error(`[${phone}] Enfileiramento falhou para o agendamento ${appointmentId}.`);
       throw new Error('Failed to enqueue message');
     }
 
-    // Salva a pendência somente após o enfileiramento ter sucesso
+    // PendingConfirmation agora é criado APÓS o envio efetivo da mensagem
+    // no processMessageQueue(), garantindo que a janela de 6h comece
+    // a partir do momento real de entrega, não do enfileiramento.
+  }
+
+  /**
+   * Cria PendingConfirmation após o envio efetivo da mensagem.
+   * Garante que a janela de resposta de 6h comece a contar a partir
+   * do momento em que a mensagem foi realmente entregue ao WhatsApp.
+   */
+  private async createPendingConfirmationAfterSend(
+    phone: string,
+    to: string,
+    appointmentId: number,
+  ): Promise<void> {
     const cleanedTo = to.replace(/\D/g, '');
     const normalizedTarget = this.normalizeJidForPending(to);
     const formattedPending = normalizedTarget || `${cleanedTo}@c.us`;
 
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 6 * 60 * 60 * 1000);
+    const expiresAt = new Date(now.getTime() + this.PENDING_CONFIRMATION_TTL_MS);
 
     try {
       // Remove registros anteriores do mesmo appointment para evitar duplicatas
@@ -1041,8 +1070,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         expiresAt,
       });
       await this.pendingRepo.save(pending);
+
+      this.logger.log(
+        `[${phone}] PendingConfirmation criado para appointment ${appointmentId} ` +
+        `(phone=${formattedPending}, expiresAt=${expiresAt.toISOString()})`,
+      );
     } catch (error) {
-      // Evita retentativas que poderiam duplicar envio; registra apenas.
       this.logger.error(
         `[${phone}] Falha ao salvar pendência para o agendamento ${appointmentId}: ${error.message}`,
       );
@@ -1070,10 +1103,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     const key = message.key;
 
-    if (key.participantAlt) {
-      fromJid = key.participantAlt;
-    } else if (key.remoteJidAlt) {
-      fromJid = key.remoteJidAlt;
+    if ((key as any).participantAlt) {
+      fromJid = (key as any).participantAlt;
+    } else if ((key as any).remoteJidAlt) {
+      fromJid = (key as any).remoteJidAlt;
     } else if (key.participant) {
       fromJid = key.participant;
     }
