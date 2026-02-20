@@ -1244,7 +1244,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         phone,
         from,
         'Ocorreu um erro ao processar sua confirmacao. Por favor, tente novamente ou contate a clinica.',
-        conf.appointmentId,
       );
       return;
     }
@@ -1316,7 +1315,6 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
         phone,
         from,
         confirmationMessage,
-        conf.appointmentId,
       );
     } catch (error) {
       this.logger.error(`Erro ao enviar confirmacao detalhada: ${error.message}`);
@@ -1324,13 +1322,12 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
         phone,
         from,
         'Seu agendamento foi confirmado com sucesso!',
-        conf.appointmentId,
       );
     }
 
     // Deleta TODOS os registros pendentes deste appointment (evita duplicatas órfãs)
     await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
-    await this.checkAndNotifyNextPendingAppointment(phone, from);
+    await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
   }
 
   private async cancel(conf: any, phone: string, from: string) {
@@ -1344,7 +1341,6 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
         phone,
         from,
         'Ocorreu um erro ao processar seu cancelamento. Por favor, tente novamente ou contate a clinica.',
-        conf.appointmentId,
       );
       return;
     }
@@ -1405,7 +1401,6 @@ Esta e uma mensagem automatica.`;
         phone,
         from,
         cancellationMessage,
-        conf.appointmentId,
       );
     } catch (error) {
       this.logger.error(`Erro ao enviar cancelamento detalhado: ${error.message}`);
@@ -1414,13 +1409,12 @@ Esta e uma mensagem automatica.`;
         phone,
         from,
         fallbackMessage,
-        conf.appointmentId,
       );
     }
 
     // Deleta TODOS os registros pendentes deste appointment (evita duplicatas órfãs)
     await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
-    await this.checkAndNotifyNextPendingAppointment(phone, from);
+    await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
   }
 
   private async sendMessageSimple(
@@ -1879,18 +1873,76 @@ Esta e uma mensagem automatica.`;
     ]));
   }
 
-  private async checkAndNotifyNextPendingAppointment(phone: string, from: string) {
+  private isSameBlock(detailsA: any, detailsB: any): boolean {
+    const startA = moment(detailsA?.blockStartTime);
+    const endA = moment(detailsA?.blockEndTime);
+    const startB = moment(detailsB?.blockStartTime);
+    const endB = moment(detailsB?.blockEndTime);
+    const dateA = moment(detailsA?.date);
+    const dateB = moment(detailsB?.date);
+
+    if (!startA.isValid() || !endA.isValid() || !startB.isValid() || !endB.isValid()) {
+      return false;
+    }
+
+    if (!dateA.isValid() || !dateB.isValid()) {
+      return false;
+    }
+
+    const sameClinic = detailsA?.clinic?.id && detailsB?.clinic?.id
+      ? detailsA.clinic.id === detailsB.clinic.id
+      : true;
+    const sameDay = dateA.isSame(dateB, 'day');
+    const sameWindow = startA.valueOf() === startB.valueOf() && endA.valueOf() === endB.valueOf();
+
+    return sameClinic && sameDay && sameWindow;
+  }
+
+  private async checkAndNotifyNextPendingAppointment(
+    phone: string,
+    from: string,
+    processedAppointmentId?: number,
+  ) {
     const phoneVariations = this.buildPendingLookupCandidates([from]);
 
-    const nextPending = await this.pendingRepo.findOne({
+    const pendingForPhone = await this.pendingRepo.find({
       where: { phone: In(phoneVariations), expiresAt: MoreThan(new Date()) },
       order: { createdAt: 'ASC' },
     });
 
-    if (nextPending) {
+    if (!pendingForPhone.length) {
+      return;
+    }
+
+    let processedDetails: any = null;
+    if (processedAppointmentId) {
+      try {
+        processedDetails = await this.getAppointmentDetails(processedAppointmentId);
+      } catch (error) {
+        this.logger.warn(
+          `Nao foi possivel carregar detalhes do appointment ${processedAppointmentId} para filtro de bloco: ${error.message}`,
+        );
+      }
+    }
+
+    for (const nextPending of pendingForPhone) {
+      if (processedAppointmentId && nextPending.appointmentId === processedAppointmentId) {
+        continue;
+      }
+
       try {
         const details = await this.getAppointmentDetails(nextPending.appointmentId);
-        // Usa timezone da clínica ou fallback para timezone padrão
+
+        // Nao envia follow-up se a pendencia for do mesmo bloco do appointment ja processado.
+        if (processedDetails && this.isSameBlock(processedDetails, details)) {
+          await this.pendingRepo.delete({ id: nextPending.id });
+          this.logger.log(
+            `PendingConfirmation ${nextPending.id} removida (appt ${nextPending.appointmentId}) por pertencer ao mesmo bloco do appointment ${processedAppointmentId}.`,
+          );
+          continue;
+        }
+
+        // Usa timezone da clinica ou fallback para timezone padrao
         const timezone = details.clinic?.timezone || DEFAULT_TIMEZONE;
 
         const patientName = details.patient.personalInfo.name;
@@ -1898,9 +1950,9 @@ Esta e uma mensagem automatica.`;
         const appointmentDate = moment(details.date).tz(timezone).format('DD/MM/YYYY');
         const appointmentTime = moment(details.blockStartTime).tz(timezone).format('HH:mm');
 
-        const followUpMessage = `Obrigado, ${patientName}! Notamos que você também tem um agendamento com o(a) profissional ${professionalName} no dia ${appointmentDate} às ${appointmentTime} que ainda não foi respondido.
+        const followUpMessage = `Obrigado, ${patientName}! Notamos que voce tambem tem um agendamento com o(a) profissional ${professionalName} no dia ${appointmentDate} as ${appointmentTime} que ainda nao foi respondido.
 
-Deseja também *confirmar* ou *cancelar* este horário?`;
+Deseja tambem *confirmar* ou *cancelar* este horario?`;
 
         await this.sendMessageSimple(
           phone,
@@ -1908,13 +1960,13 @@ Deseja também *confirmar* ou *cancelar* este horário?`;
           followUpMessage,
           nextPending.appointmentId,
         );
-        this.logger.log(`Enviada mensagem de acompanhamento para o agendamento ${nextPending.appointmentId} para o número ${from}.`);
+        this.logger.log(`Enviada mensagem de acompanhamento para o agendamento ${nextPending.appointmentId} para o numero ${from}.`);
+        return;
       } catch (error) {
-        this.logger.error(`Falha ao notificar próxima pendência para ${from}: ${error.message}`);
+        this.logger.error(`Falha ao notificar proxima pendencia para ${from} (appt ${nextPending.appointmentId}): ${error.message}`);
       }
     }
   }
-
   private async handleDeliveryAcknowledged(
     phone: string,
     messageId: string,
