@@ -1058,27 +1058,33 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + this.PENDING_CONFIRMATION_TTL_MS);
 
-    try {
-      // Remove registros anteriores do mesmo appointment para evitar duplicatas
-      await this.pendingRepo.delete({ appointmentId });
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.pendingRepo.delete({ appointmentId });
 
-      const pending = this.pendingRepo.create({
-        id: uuidv4(),
-        appointmentId,
-        phone: formattedPending,
-        createdAt: now,
-        expiresAt,
-      });
-      await this.pendingRepo.save(pending);
+        const pending = this.pendingRepo.create({
+          id: uuidv4(),
+          appointmentId,
+          phone: formattedPending,
+          createdAt: now,
+          expiresAt,
+        });
+        await this.pendingRepo.save(pending);
 
-      this.logger.log(
-        `[${phone}] PendingConfirmation criado para appointment ${appointmentId} ` +
-        `(phone=${formattedPending}, expiresAt=${expiresAt.toISOString()})`,
-      );
-    } catch (error) {
-      this.logger.error(
-        `[${phone}] Falha ao salvar pendência para o agendamento ${appointmentId}: ${error.message}`,
-      );
+        this.logger.log(
+          `[${phone}] PendingConfirmation criado para appointment ${appointmentId} ` +
+          `(phone=${formattedPending}, expiresAt=${expiresAt.toISOString()}, tentativa ${attempt})`,
+        );
+        break;
+      } catch (error) {
+        this.logger.error(
+          `[${phone}] Falha ao salvar pendência (tentativa ${attempt}/${maxRetries}): ${error.message}`,
+        );
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 500 * Math.pow(2, attempt - 1)));
+        }
+      }
     }
   }
 
@@ -1123,44 +1129,99 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     ]);
     const canonicalFrom = this.normalizeJidForPending(fromJid);
 
-    const pending = await this.pendingRepo.findOne({
+    let pending = await this.pendingRepo.findOne({
       where: { phone: In(phoneVariations), expiresAt: MoreThan(new Date()) },
       order: { createdAt: 'DESC' },
     });
 
     if (!pending) {
       this.logger.warn(
-        `[${phone}] Sem pendência ativa para ${canonicalFrom || fromJid}. Variações: ${phoneVariations.join(', ')}`,
+        `[${phone}] Sem pendência local para ${canonicalFrom || fromJid}. Tentando fallback via API...`,
       );
 
-      const normalizedWithoutPending = this.normalize(messageContent);
-      const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
-      const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];
-      const threshold = 2;
-      const getMinDistance = (text: string, keywords: string[]): number => {
-        return Math.min(
-          ...keywords.map(kw => {
-            const dist = this.levenshtein(text, kw);
-            if (kw.length <= 3 && dist > 1) return 99;
-            return dist;
-          })
+      // Fallback: busca na API da sinapsys-api por AppointmentConfirmationMessage
+      try {
+        const cleanedPhone = (canonicalFrom || fromJid)
+          .replace('@c.us', '')
+          .replace('@s.whatsapp.net', '');
+        const response = await firstValueFrom(
+          this.httpService.get(
+            `http://localhost:3001/appointment/confirmation-message/by-phone/${cleanedPhone}`,
+            {
+              headers: { 'x-internal-api-secret': process.env.API_SECRET },
+              timeout: this.HTTP_TIMEOUT,
+            },
+          ),
         );
-      };
-      const confirmDistance = getMinDistance(normalizedWithoutPending, confirmKeywords);
-      const cancelDistance = getMinDistance(normalizedWithoutPending, cancelKeywords);
-      const looksLikeDecisionIntent =
-        confirmDistance <= threshold || cancelDistance <= threshold;
 
-      if (looksLikeDecisionIntent) {
-        await this.sendMessageSimple(
-          phone,
-          fromJid,
-          'Nao encontramos uma confirmacao pendente para este numero no momento. ' +
-          'Isso pode acontecer se a mensagem expirou ou se o atendimento ja foi processado. ' +
-          'Por favor, entre em contato com a clinica para validar seu horario.',
+        if (response.data && response.data.appointmentId) {
+          this.logger.log(
+            `[${phone}] Fallback encontrou agendamento ${response.data.appointmentId} via API`,
+          );
+          const now = new Date();
+          const expiresAt = new Date(now.getTime() + this.PENDING_CONFIRMATION_TTL_MS);
+          try {
+            await this.pendingRepo.delete({ appointmentId: response.data.appointmentId });
+            const newPending = this.pendingRepo.create({
+              id: uuidv4(),
+              appointmentId: response.data.appointmentId,
+              phone: canonicalFrom || `${cleanedPhone}@c.us`,
+              createdAt: now,
+              expiresAt,
+            });
+            await this.pendingRepo.save(newPending);
+            pending = newPending;
+          } catch (dbError) {
+            this.logger.error(
+              `[${phone}] Falha ao recriar pendência via fallback: ${dbError.message}`,
+            );
+            // Objeto em memória para continuar o fluxo mesmo sem persistir
+            pending = {
+              appointmentId: response.data.appointmentId,
+              phone: canonicalFrom || `${cleanedPhone}@c.us`,
+            } as any;
+          }
+        }
+      } catch (fallbackError) {
+        this.logger.error(
+          `[${phone}] Fallback via API falhou: ${fallbackError.message}`,
         );
       }
-      return;
+
+      if (!pending) {
+        this.logger.warn(
+          `[${phone}] Nenhuma confirmação encontrada (local + fallback) para ${canonicalFrom || fromJid}`,
+        );
+
+        const normalizedWithoutPending = this.normalize(messageContent);
+        const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
+        const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];
+        const threshold = 2;
+        const getMinDistance = (text: string, keywords: string[]): number => {
+          return Math.min(
+            ...keywords.map(kw => {
+              const dist = this.levenshtein(text, kw);
+              if (kw.length <= 3 && dist > 1) return 99;
+              return dist;
+            })
+          );
+        };
+        const confirmDistance = getMinDistance(normalizedWithoutPending, confirmKeywords);
+        const cancelDistance = getMinDistance(normalizedWithoutPending, cancelKeywords);
+        const looksLikeDecisionIntent =
+          confirmDistance <= threshold || cancelDistance <= threshold;
+
+        if (looksLikeDecisionIntent) {
+          await this.sendMessageSimple(
+            phone,
+            fromJid,
+            'Nao encontramos uma confirmacao pendente para este numero no momento. ' +
+            'Isso pode acontecer se a mensagem expirou ou se o atendimento ja foi processado. ' +
+            'Por favor, entre em contato com a clinica para validar seu horario.',
+          );
+        }
+        return;
+      }
     }
 
     await this.notifyConfirmationEvent({
