@@ -1132,6 +1132,34 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `[${phone}] Sem pendência ativa para ${canonicalFrom || fromJid}. Variações: ${phoneVariations.join(', ')}`,
       );
+
+      const normalizedWithoutPending = this.normalize(messageContent);
+      const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
+      const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];
+      const threshold = 2;
+      const getMinDistance = (text: string, keywords: string[]): number => {
+        return Math.min(
+          ...keywords.map(kw => {
+            const dist = this.levenshtein(text, kw);
+            if (kw.length <= 3 && dist > 1) return 99;
+            return dist;
+          })
+        );
+      };
+      const confirmDistance = getMinDistance(normalizedWithoutPending, confirmKeywords);
+      const cancelDistance = getMinDistance(normalizedWithoutPending, cancelKeywords);
+      const looksLikeDecisionIntent =
+        confirmDistance <= threshold || cancelDistance <= threshold;
+
+      if (looksLikeDecisionIntent) {
+        await this.sendMessageSimple(
+          phone,
+          fromJid,
+          'Nao encontramos uma confirmacao pendente para este numero no momento. ' +
+          'Isso pode acontecer se a mensagem expirou ou se o atendimento ja foi processado. ' +
+          'Por favor, entre em contato com a clinica para validar seu horario.',
+        );
+      }
       return;
     }
 
@@ -1315,6 +1343,7 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
         phone,
         from,
         confirmationMessage,
+        conf.appointmentId,
       );
     } catch (error) {
       this.logger.error(`Erro ao enviar confirmacao detalhada: ${error.message}`);
@@ -1322,6 +1351,7 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
         phone,
         from,
         'Seu agendamento foi confirmado com sucesso!',
+        conf.appointmentId,
       );
     }
 
@@ -1401,6 +1431,7 @@ Esta e uma mensagem automatica.`;
         phone,
         from,
         cancellationMessage,
+        conf.appointmentId,
       );
     } catch (error) {
       this.logger.error(`Erro ao enviar cancelamento detalhado: ${error.message}`);
@@ -1409,6 +1440,7 @@ Esta e uma mensagem automatica.`;
         phone,
         from,
         fallbackMessage,
+        conf.appointmentId,
       );
     }
 
