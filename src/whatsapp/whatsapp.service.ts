@@ -1091,6 +1091,30 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private async handleIncoming(phone: string, message: WAMessage) {
     if (!message.key.id) return;
 
+    // Filtro de JID: só processar mensagens de conversas individuais (@s.whatsapp.net)
+    // Ignora: @lid (comunidades/linked devices), @g.us (grupos), @broadcast, etc.
+    const remoteJid = message.key.remoteJid || '';
+    if (!remoteJid.endsWith('@s.whatsapp.net')) {
+      this.logger.debug(
+        `[${phone}] Mensagem ${message.key.id} ignorada (JID não individual: ${remoteJid}).`,
+      );
+      return;
+    }
+
+    // Filtro de mensagens antigas (acumuladas durante downtime/reconnect)
+    // Evita processar buffer offline do Baileys após reinício do servidor
+    const MAX_MESSAGE_AGE_SECONDS = 1800; // 30 minutos
+    const messageTimestamp = message.messageTimestamp;
+    if (messageTimestamp) {
+      const messageAgeSeconds = Math.floor(Date.now() / 1000) - Number(messageTimestamp);
+      if (messageAgeSeconds > MAX_MESSAGE_AGE_SECONDS) {
+        this.logger.debug(
+          `[${phone}] Mensagem ${message.key.id} ignorada (antiga: ${Math.round(messageAgeSeconds)}s, limite: ${MAX_MESSAGE_AGE_SECONDS}s).`,
+        );
+        return;
+      }
+    }
+
     // Deduplicação de mensagens
     if (this.processedMessages.has(message.key.id)) {
       this.logger.debug(`[${phone}] Mensagem ${message.key.id} ignorada (duplicada).`);
