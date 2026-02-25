@@ -1213,37 +1213,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (!pending) {
-        this.logger.warn(
-          `[${phone}] Nenhuma confirmação encontrada (local + fallback) para ${canonicalFrom || fromJid}`,
+        // Sem PendingConfirmation = silêncio total.
+        // Não responder a conversas que não são de confirmação de agendamento,
+        // mesmo que a mensagem pareça com "sim", "ok", etc.
+        this.logger.debug(
+          `[${phone}] Nenhuma confirmação pendente para ${canonicalFrom || fromJid}. Ignorando.`,
         );
-
-        const normalizedWithoutPending = this.normalize(messageContent);
-        const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
-        const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];
-        const threshold = 2;
-        const getMinDistance = (text: string, keywords: string[]): number => {
-          return Math.min(
-            ...keywords.map(kw => {
-              const dist = this.levenshtein(text, kw);
-              if (kw.length <= 3 && dist > 1) return 99;
-              return dist;
-            })
-          );
-        };
-        const confirmDistance = getMinDistance(normalizedWithoutPending, confirmKeywords);
-        const cancelDistance = getMinDistance(normalizedWithoutPending, cancelKeywords);
-        const looksLikeDecisionIntent =
-          confirmDistance <= threshold || cancelDistance <= threshold;
-
-        if (looksLikeDecisionIntent) {
-          await this.sendMessageSimple(
-            phone,
-            fromJid,
-            'Nao encontramos uma confirmacao pendente para este numero no momento. ' +
-            'Isso pode acontecer se a mensagem expirou ou se o atendimento ja foi processado. ' +
-            'Por favor, entre em contato com a clinica para validar seu horario.',
-          );
-        }
         return;
       }
     }
