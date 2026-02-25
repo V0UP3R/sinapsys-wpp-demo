@@ -978,6 +978,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     if (!trimmed) return '';
 
     if (trimmed.includes('@')) {
+      // @lid é o formato Linked ID do WhatsApp - o valor antes de @lid NÃO é um telefone,
+      // é um identificador de privacidade. Retorna como está para matching direto com
+      // variações @lid geradas pelo generatePhoneVariations().
+      if (trimmed.endsWith('@lid')) {
+        return trimmed;
+      }
       return trimmed.replace('@s.whatsapp.net', '@c.us');
     }
 
@@ -1091,10 +1097,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private async handleIncoming(phone: string, message: WAMessage) {
     if (!message.key.id) return;
 
-    // Filtro de JID: só processar mensagens de conversas individuais (@s.whatsapp.net)
-    // Ignora: @lid (comunidades/linked devices), @g.us (grupos), @broadcast, etc.
+    // Filtro de JID: só processar mensagens de conversas individuais
+    // Aceita: @s.whatsapp.net (formato clássico) e @lid (Linked ID - formato mais recente do WhatsApp)
+    // Ignora: @g.us (grupos), @broadcast, @newsletter, etc.
     const remoteJid = message.key.remoteJid || '';
-    if (!remoteJid.endsWith('@s.whatsapp.net')) {
+    if (!remoteJid.endsWith('@s.whatsapp.net') && !remoteJid.endsWith('@lid')) {
       this.logger.debug(
         `[${phone}] Mensagem ${message.key.id} ignorada (JID não individual: ${remoteJid}).`,
       );
@@ -1141,6 +1148,25 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       fromJid = key.participant;
     }
 
+    // Fallback: se fromJid ainda é @lid (sem Alt disponível), tenta resolver via lidMapping do Baileys
+    // lidMapping disponível a partir do Baileys v7 (pode não existir em todas as versões rc)
+    if (fromJid?.endsWith('@lid')) {
+      try {
+        const sock = this.sessions.get(phone);
+        const pn = await (sock?.signalRepository as any)?.lidMapping?.getPNForLID?.(fromJid);
+        if (pn) {
+          this.logger.log(`[${phone}] LID ${fromJid} resolvido para PN ${pn}`);
+          fromJid = pn;
+        } else {
+          this.logger.warn(
+            `[${phone}] LID ${fromJid} sem mapeamento PN disponível. Continuando com variações.`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(`[${phone}] Falha ao resolver LID ${fromJid}: ${err.message}`);
+      }
+    }
+
     if (!messageContent || !fromJid) return;
     this.logger.log(`[${phone}] Recebido de ${fromJid}: ${messageContent}`);
 
@@ -1167,7 +1193,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       try {
         const cleanedPhone = (canonicalFrom || fromJid)
           .replace('@c.us', '')
-          .replace('@s.whatsapp.net', '');
+          .replace('@s.whatsapp.net', '')
+          .replace('@lid', '');
         const response = await firstValueFrom(
           this.httpService.get(
             `http://localhost:3001/appointment/confirmation-message/by-phone/${cleanedPhone}`,
