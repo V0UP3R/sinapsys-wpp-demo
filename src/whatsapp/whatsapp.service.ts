@@ -1097,20 +1097,31 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private async handleIncoming(phone: string, message: WAMessage) {
     if (!message.key.id) return;
 
-    // Filtro de JID: só processar mensagens de conversas individuais
-    // Aceita: @s.whatsapp.net (formato clássico) e @lid (Linked ID - formato mais recente do WhatsApp)
-    // Ignora: @g.us (grupos), @broadcast, @newsletter, etc.
-    const remoteJid = message.key.remoteJid || '';
-    if (!remoteJid.endsWith('@s.whatsapp.net') && !remoteJid.endsWith('@lid')) {
+    const key = message.key;
+
+    // Filtro de JID: processa apenas conversas individuais (@s.whatsapp.net, @c.us, @lid).
+    // Ignora grupos e broadcast.
+    const jidCandidates = [
+      key.remoteJid,
+      key.participant,
+      (key as any)?.remoteJidAlt,
+      (key as any)?.participantAlt,
+    ].filter(Boolean) as string[];
+
+    const hasIndividualJid = jidCandidates.some((jid) =>
+      /@(s\.whatsapp\.net|c\.us|lid)$/.test(jid),
+    );
+    if (!hasIndividualJid) {
+      const rawJid = key.remoteJid || '';
       this.logger.debug(
-        `[${phone}] Mensagem ${message.key.id} ignorada (JID não individual: ${remoteJid}).`,
+        `[${phone}] Mensagem ${message.key.id} ignorada (JID nao individual: ${rawJid}).`,
       );
       return;
     }
 
     // Filtro de mensagens antigas (acumuladas durante downtime/reconnect)
     // Evita processar buffer offline do Baileys após reinício do servidor
-    const MAX_MESSAGE_AGE_SECONDS = 1800; // 30 minutos
+    const MAX_MESSAGE_AGE_SECONDS = Math.floor(this.PENDING_CONFIRMATION_TTL_MS / 1000);
     const messageTimestamp = message.messageTimestamp;
     if (messageTimestamp) {
       const messageAgeSeconds = Math.floor(Date.now() / 1000) - Number(messageTimestamp);
@@ -1137,8 +1148,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       message.message?.ephemeralMessage?.message?.extendedTextMessage?.text;
 
     let fromJid = message.key.remoteJid;
-
-    const key = message.key;
 
     if ((key as any).participantAlt) {
       fromJid = (key as any).participantAlt;
