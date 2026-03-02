@@ -35,13 +35,21 @@ export class MessageController {
     if (!body?.message) {
       throw new BadRequestException('Campo "message" e obrigatorio.');
     }
-    await this.whatsappService.sendMessage(
+    const result = await this.whatsappService.sendMessage(
       body.phone,
       body.to,
       body.message,
       body.appointmentId,
     );
-    return { status: 'Mensagem enviada!' };
+    if (!result.success) {
+      return {
+        success: false,
+        status: 'Mensagem nao enviada.',
+        reason: result.reason,
+      };
+    }
+
+    return { success: true, status: 'Mensagem enviada!' };
   }
 
   @Post('disconnect')

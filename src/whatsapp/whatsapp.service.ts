@@ -56,6 +56,13 @@ interface PendingDeliveryEntry {
 }
 
 type AppointmentUpdateResult = 'updated' | 'terminal_not_available' | 'failed';
+type SendMessageResultReason = 'CLIENT_NOT_CONNECTED' | 'ENQUEUE_FAILED';
+
+interface SendMessageResult {
+  success: boolean;
+  reason?: SendMessageResultReason;
+  message: string;
+}
 
 @Injectable()
 export class WhatsappService implements OnModuleInit, OnModuleDestroy {
@@ -641,7 +648,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   private async enqueueMessage(phone: string, payload: MessagePayload) {
     if (!this.sessions.has(phone)) {
-      this.logger.error(`[${phone}] Tentativa de enfileirar mensagem falhou: cliente não conectado.`);
+      this.logger.warn(`[${phone}] Tentativa de enfileirar mensagem falhou: cliente não conectado.`);
       return false;
     }
 
@@ -1024,11 +1031,15 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     to: string,
     text: string,
     appointmentId: number,
-  ) {
+  ): Promise<SendMessageResult> {
     const sock = this.sessions.get(phone);
     if (!sock || !sock.user) {
-      this.logger.error(`[${phone}] Tentativa de envio falhou: cliente não conectado.`);
-      throw new Error('Client not connected');
+      this.logger.warn(`[${phone}] Tentativa de envio ignorada: cliente nao conectado.`);
+      return {
+        success: false,
+        reason: 'CLIENT_NOT_CONNECTED',
+        message: 'Client not connected',
+      };
     }
 
     const enqueued = await this.enqueueMessage(phone, {
@@ -1040,17 +1051,25 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       createPendingConfirmation: true,
     });
     if (!enqueued) {
-      this.logger.error(`[${phone}] Enfileiramento falhou para o agendamento ${appointmentId}.`);
-      throw new Error('Failed to enqueue message');
+      this.logger.warn(`[${phone}] Enfileiramento falhou para o agendamento ${appointmentId}.`);
+      return {
+        success: false,
+        reason: 'ENQUEUE_FAILED',
+        message: 'Failed to enqueue message',
+      };
     }
 
-    // PendingConfirmation agora é criado APÓS o envio efetivo da mensagem
+    // PendingConfirmation agora e criado APOS o envio efetivo da mensagem
     // no processMessageQueue(), garantindo que a janela de 6h comece
-    // a partir do momento real de entrega, não do enfileiramento.
+    // a partir do momento real de entrega, nao do enfileiramento.
+    return {
+      success: true,
+      message: 'Message enqueued successfully',
+    };
   }
 
   /**
-   * Cria PendingConfirmation após o envio efetivo da mensagem.
+   * Cria PendingConfirmation apos o envio efetivo da mensagem.
    * Garante que a janela de resposta de 6h comece a contar a partir
    * do momento em que a mensagem foi realmente entregue ao WhatsApp.
    */
