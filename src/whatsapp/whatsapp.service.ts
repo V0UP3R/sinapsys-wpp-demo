@@ -55,6 +55,8 @@ interface PendingDeliveryEntry {
   messageText?: string;
 }
 
+type AppointmentUpdateResult = 'updated' | 'terminal_not_available' | 'failed';
+
 @Injectable()
 export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private sessions = new Map<string, WASocket>();
@@ -1324,11 +1326,43 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
 
+  private extractHttpStatus(error: any): number | undefined {
+    const status = error?.response?.status;
+    return typeof status === 'number' ? status : undefined;
+  }
+
+  private extractApiErrorCode(error: any): string | undefined {
+    const code = error?.response?.data?.code;
+    return typeof code === 'string' ? code : undefined;
+  }
+
+  private isRetryableHttpError(error: any): boolean {
+    const status = this.extractHttpStatus(error);
+    if (!status) {
+      // Network, DNS, timeout or unknown transport issue.
+      return true;
+    }
+    if (status >= 500) {
+      return true;
+    }
+    return status === 408 || status === 429;
+  }
+
+  private isTerminalAppointmentStatusError(error: any): boolean {
+    const status = this.extractHttpStatus(error);
+    const code = this.extractApiErrorCode(error);
+    return (
+      status === 404 ||
+      status === 410 ||
+      code === 'APPOINTMENT_NOT_AVAILABLE_FOR_CONFIRMATION'
+    );
+  }
+
   private async updateAppointmentStatusWithRetry(
     appointmentId: number,
     status: 'Confirmado' | 'Cancelado',
     reasonLack?: string,
-  ): Promise<boolean> {
+  ): Promise<AppointmentUpdateResult> {
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -1347,23 +1381,49 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             },
           ),
         );
-        return true;
+        return 'updated';
       } catch (error) {
-        this.logger.error(
-          `Falha ao atualizar bloco para ${status} (tentativa ${attempt}/${maxAttempts}) para o appt ID ${appointmentId}: ${error.message}`,
-        );
-        if (attempt < maxAttempts) {
-          await new Promise((resolve) => setTimeout(resolve, 1500));
+        const statusCode = this.extractHttpStatus(error);
+        const errorCode = this.extractApiErrorCode(error);
+        if (this.isTerminalAppointmentStatusError(error)) {
+          this.logger.warn(
+            `Falha terminal ao atualizar bloco para ${status} no appt ID ${appointmentId} (status=${statusCode}, code=${errorCode || 'n/a'}). Nao sera feito retry.`,
+          );
+          return 'terminal_not_available';
         }
+
+        const retryable = this.isRetryableHttpError(error);
+        if (!retryable || attempt === maxAttempts) {
+          this.logger.error(
+            `Falha ao atualizar bloco para ${status} (tentativa ${attempt}/${maxAttempts}) para o appt ID ${appointmentId} (status=${statusCode || 'n/a'}, code=${errorCode || 'n/a'}): ${error.message}`,
+          );
+          return 'failed';
+        }
+
+        this.logger.error(
+          `Falha ao atualizar bloco para ${status} (tentativa ${attempt}/${maxAttempts}) para o appt ID ${appointmentId} (status=${statusCode || 'n/a'}, code=${errorCode || 'n/a'}): ${error.message}`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 1500));
       }
     }
-    return false;
+    return 'failed';
   }
 
 
   private async confirm(conf: any, phone: string, from: string) {
-    const updated = await this.updateAppointmentStatusWithRetry(conf.appointmentId, 'Confirmado');
-    if (!updated) {
+    const updateResult = await this.updateAppointmentStatusWithRetry(conf.appointmentId, 'Confirmado');
+    if (updateResult === 'terminal_not_available') {
+      await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+      await this.sendMessageSimple(
+        phone,
+        from,
+        'Este agendamento foi alterado ou cancelado pela clinica e nao esta mais disponivel para confirmacao por aqui. Para confirmar outro horario, fale com a clinica.',
+      );
+      await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
+      return;
+    }
+
+    if (updateResult !== 'updated') {
       await this.sendMessageSimple(
         phone,
         from,
@@ -1457,12 +1517,23 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
   }
 
   private async cancel(conf: any, phone: string, from: string) {
-    const updated = await this.updateAppointmentStatusWithRetry(
+    const updateResult = await this.updateAppointmentStatusWithRetry(
       conf.appointmentId,
       'Cancelado',
       'Cancelado pelo WhatsApp',
     );
-    if (!updated) {
+    if (updateResult === 'terminal_not_available') {
+      await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+      await this.sendMessageSimple(
+        phone,
+        from,
+        'Este agendamento foi alterado ou cancelado pela clinica e nao esta mais disponivel para cancelamento por aqui. Em caso de duvidas, fale com a clinica.',
+      );
+      await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
+      return;
+    }
+
+    if (updateResult !== 'updated') {
       await this.sendMessageSimple(
         phone,
         from,
@@ -1583,12 +1654,18 @@ Esta e uma mensagem automatica.`;
         );
         return true;
       } catch (error) {
+        const statusCode = this.extractHttpStatus(error);
+        const retryable = this.isRetryableHttpError(error);
         const baseMessage = `${contextLabel} (tentativa ${attempt}/${maxAttempts})`;
-        if (attempt === maxAttempts) {
-          this.logger.error(`${baseMessage}: ${error.message}`);
+        if (!retryable || attempt === maxAttempts) {
+          this.logger.error(
+            `${baseMessage}: ${error.message} (status=${statusCode || 'n/a'}, retryable=${retryable})`,
+          );
           return false;
         }
-        this.logger.warn(`${baseMessage}: ${error.message}. Tentando novamente...`);
+        this.logger.warn(
+          `${baseMessage}: ${error.message} (status=${statusCode || 'n/a'}). Tentando novamente...`,
+        );
         await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
       }
     }
