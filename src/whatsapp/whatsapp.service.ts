@@ -664,7 +664,20 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    sessionQueue.queue.push(payload);
+    const appointmentIdAsNumber =
+      payload.appointmentId !== undefined && payload.appointmentId !== null
+        ? Number(payload.appointmentId)
+        : undefined;
+
+    sessionQueue.queue.push({
+      ...payload,
+      appointmentId:
+        appointmentIdAsNumber !== undefined &&
+        Number.isInteger(appointmentIdAsNumber) &&
+        appointmentIdAsNumber > 0
+          ? appointmentIdAsNumber
+          : undefined,
+    });
     this.logger.log(`[${phone}] Mensagem para ${payload.to} adicionada à fila. Tamanho atual: ${sessionQueue.queue.length}`);
 
     if (!sessionQueue.isProcessing) {
@@ -1722,12 +1735,31 @@ Esta e uma mensagem automatica.`;
     errorMessage?: string;
     occurredAt?: string;
   }) {
+    const appointmentId = Number(payload?.appointmentId);
+    if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
+      this.logger.warn(
+        `[confirmation-event] appointmentId invalido recebido no wpp-demo: ${String(payload?.appointmentId)}`,
+      );
+      return;
+    }
+
+    const occurredAt =
+      payload.occurredAt && !Number.isNaN(new Date(payload.occurredAt).getTime())
+        ? payload.occurredAt
+        : new Date().toISOString();
+
+    const eventPayload = {
+      ...payload,
+      appointmentId,
+      occurredAt,
+    };
+
     await this.postInternalApiWithRetry(
       'http://localhost:3001/appointment/confirmation-message/events',
-      payload,
-      `Falha ao registrar evento de confirmacao do agendamento ${payload.appointmentId}`,
+      eventPayload,
+      `Falha ao registrar evento de confirmacao do agendamento ${appointmentId}`,
       {
-        appointmentId: payload.appointmentId,
+        appointmentId,
         type: payload.type,
         direction: payload.direction || null,
       },

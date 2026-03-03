@@ -35,11 +35,17 @@ export class MessageController {
     if (!body?.message) {
       throw new BadRequestException('Campo "message" e obrigatorio.');
     }
+
+    const appointmentId = Number(body?.appointmentId);
+    if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
+      throw new BadRequestException('Campo "appointmentId" invalido.');
+    }
+
     const result = await this.whatsappService.sendMessage(
       body.phone,
       body.to,
       body.message,
-      body.appointmentId,
+      appointmentId,
     );
     if (!result.success) {
       return {
