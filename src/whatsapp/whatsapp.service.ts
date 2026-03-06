@@ -2189,6 +2189,15 @@ Esta e uma mensagem automatica.`;
       try {
         const details = await this.getAppointmentDetails(nextPending.appointmentId);
 
+        // Nao envia follow-up para agendamentos com sendReminder desativado
+        if (details.sendReminder === false) {
+          await this.pendingRepo.delete({ id: nextPending.id });
+          this.logger.log(
+            `PendingConfirmation ${nextPending.id} removida (appt ${nextPending.appointmentId}) - sendReminder desativado.`,
+          );
+          continue;
+        }
+
         // Nao envia follow-up se a pendencia for do mesmo bloco do appointment ja processado.
         if (processedDetails && this.isSameBlock(processedDetails, details)) {
           await this.pendingRepo.delete({ id: nextPending.id });
