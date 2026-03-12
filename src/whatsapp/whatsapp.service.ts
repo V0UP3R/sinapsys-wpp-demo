@@ -44,6 +44,14 @@ interface MessagePayload {
   appointmentId?: number;
   skipValidation?: boolean; // Flag para pular a validação em respostas
   createPendingConfirmation?: boolean; // Flag para criar PendingConfirmation após envio efetivo
+  assistantConversationId?: string;
+  assistantSenderUserId?: number;
+  assistantAutomationUsage?: {
+    model?: string | null;
+    toolCalls?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+  };
 }
 
 interface PendingDeliveryEntry {
@@ -62,6 +70,19 @@ interface SendMessageResult {
   success: boolean;
   reason?: SendMessageResultReason;
   message: string;
+}
+
+interface AssistantAutomationResponse {
+  handled?: boolean;
+  shouldContinueLegacyConfirmation?: boolean;
+  conversationId?: string;
+  replyText?: string | null;
+  automationUsage?: {
+    model?: string | null;
+    toolCalls?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+  } | null;
 }
 
 @Injectable()
@@ -100,6 +121,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   // Cache de mensagens processadas para evitar duplicidade
   private processedMessages = new Set<string>();
+  private systemSentMessageIds = new Map<string, number>();
 
   // Controla reconexao automatica por sessao
   private reconnectAllowed = new Set<string>();
@@ -400,6 +422,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               continue;
             }
             if (msg?.key?.fromMe) {
+              await this.handleOutgoingFromMe(phone, msg);
               continue;
             }
             await this.handleIncoming(phone, msg);
@@ -921,6 +944,19 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             continue;
           }
 
+          this.trackSystemSentMessage(sendResult.messageId);
+
+          if (payload.assistantConversationId) {
+            await this.notifyAssistantOutgoingMessage({
+              conversationId: payload.assistantConversationId,
+              body: payload.text,
+              providerMessageId: sendResult.messageId,
+              sentAt: new Date().toISOString(),
+              senderUserId: payload.assistantSenderUserId,
+              automationUsage: payload.assistantAutomationUsage,
+            });
+          }
+
           this.pendingDelivery.set(sendResult.messageId, {
             phone,
             jid: finalJid,
@@ -1039,6 +1075,88 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     return Array.from(candidates);
   }
 
+  private async resolveDirectConversationJid(phone: string, message: WAMessage) {
+    const key = message.key;
+    let resolvedJid = (key as any)?.remoteJidAlt || key.remoteJid || '';
+
+    if (resolvedJid.endsWith('@lid')) {
+      try {
+        const sock = this.sessions.get(phone);
+        const pn = await (sock?.signalRepository as any)?.lidMapping?.getPNForLID?.(resolvedJid);
+        if (pn) {
+          this.logger.log(`[${phone}] LID ${resolvedJid} resolvido para PN ${pn} na saida manual.`);
+          resolvedJid = pn;
+        }
+      } catch (error) {
+        this.logger.warn(
+          `[${phone}] Falha ao resolver LID ${resolvedJid} na saida manual: ${error.message}`,
+        );
+      }
+    }
+
+    return resolvedJid;
+  }
+
+  private extractMessageText(message: WAMessage): string | undefined {
+    return (
+      message.message?.conversation ||
+      message.message?.extendedTextMessage?.text ||
+      message.message?.ephemeralMessage?.message?.conversation ||
+      message.message?.ephemeralMessage?.message?.extendedTextMessage?.text
+    );
+  }
+
+  private trackSystemSentMessage(messageId?: string | null) {
+    const trimmed = messageId?.trim();
+    if (!trimmed) return;
+
+    this.systemSentMessageIds.set(trimmed, Date.now());
+    setTimeout(() => this.systemSentMessageIds.delete(trimmed), 10 * 60 * 1000);
+  }
+
+  private wasSystemSentMessage(messageId?: string | null) {
+    const trimmed = messageId?.trim();
+    return trimmed ? this.systemSentMessageIds.has(trimmed) : false;
+  }
+
+  private async handleOutgoingFromMe(phone: string, message: WAMessage) {
+    const key = message.key;
+    const conversationJid = await this.resolveDirectConversationJid(phone, message);
+    const isDirectConversation = /@(s\.whatsapp\.net|c\.us|lid)$/.test(conversationJid);
+
+    if (!isDirectConversation) {
+      return;
+    }
+
+    if (this.wasSystemSentMessage(key.id)) {
+      return;
+    }
+
+    const messageContent = this.extractMessageText(message)?.trim();
+    if (!messageContent) {
+      return;
+    }
+
+    const canonicalTo = this.normalizeJidForPending(conversationJid);
+
+    if ((canonicalTo || conversationJid).endsWith('@lid')) {
+      this.logger.warn(
+        `[${phone}] Saida manual ${key.id} ignorada porque o destino permaneceu em @lid (${conversationJid}).`,
+      );
+      return;
+    }
+
+    await this.notifyAssistantManualOutgoingMessage({
+      connectionPhoneNumber: phone,
+      to: canonicalTo || conversationJid,
+      body: messageContent,
+      messageId: key.id,
+      sentAt: message.messageTimestamp
+        ? new Date(Number(message.messageTimestamp) * 1000).toISOString()
+        : new Date().toISOString(),
+    });
+  }
+
   async sendMessage(
     phone: string,
     to: string,
@@ -1075,6 +1193,46 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     // PendingConfirmation agora e criado APOS o envio efetivo da mensagem
     // no processMessageQueue(), garantindo que a janela de 6h comece
     // a partir do momento real de entrega, nao do enfileiramento.
+    return {
+      success: true,
+      message: 'Message enqueued successfully',
+    };
+  }
+
+  async sendAssistantMessage(
+    phone: string,
+    to: string,
+    text: string,
+    assistantConversationId: string,
+    assistantSenderUserId?: number,
+  ): Promise<SendMessageResult> {
+    const sock = this.sessions.get(phone);
+    if (!sock || !sock.user) {
+      this.logger.warn(`[${phone}] Tentativa de envio do assistente ignorada: cliente nao conectado.`);
+      return {
+        success: false,
+        reason: 'CLIENT_NOT_CONNECTED',
+        message: 'Client not connected',
+      };
+    }
+
+    const enqueued = await this.enqueueMessage(phone, {
+      to,
+      text,
+      isReply: true,
+      skipValidation: false,
+      assistantConversationId,
+      assistantSenderUserId,
+    });
+
+    if (!enqueued) {
+      return {
+        success: false,
+        reason: 'ENQUEUE_FAILED',
+        message: 'Failed to enqueue message',
+      };
+    }
+
     return {
       success: true,
       message: 'Message enqueued successfully',
@@ -1133,22 +1291,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
     const key = message.key;
 
-    // Filtro de JID: processa apenas conversas individuais (@s.whatsapp.net, @c.us, @lid).
-    // Ignora grupos e broadcast.
-    const jidCandidates = [
-      key.remoteJid,
-      key.participant,
-      (key as any)?.remoteJidAlt,
-      (key as any)?.participantAlt,
-    ].filter(Boolean) as string[];
-
-    const hasIndividualJid = jidCandidates.some((jid) =>
-      /@(s\.whatsapp\.net|c\.us|lid)$/.test(jid),
-    );
-    if (!hasIndividualJid) {
-      const rawJid = key.remoteJid || '';
+    // Processa apenas conversa direta. Grupo, broadcast e status ficam fora do assistente.
+    const conversationJid = key.remoteJid || (key as any)?.remoteJidAlt || '';
+    const isDirectConversation = /@(s\.whatsapp\.net|c\.us|lid)$/.test(conversationJid);
+    if (!isDirectConversation) {
       this.logger.debug(
-        `[${phone}] Mensagem ${message.key.id} ignorada (JID nao individual: ${rawJid}).`,
+        `[${phone}] Mensagem ${message.key.id} ignorada (conversa nao direta: ${conversationJid}).`,
       );
       return;
     }
@@ -1175,11 +1323,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     this.processedMessages.add(message.key.id);
     setTimeout(() => this.processedMessages.delete(message.key.id), 5000); // Limpa após 5 segundos
 
-    const messageContent =
-      message.message?.conversation ||
-      message.message?.extendedTextMessage?.text ||
-      message.message?.ephemeralMessage?.message?.conversation ||
-      message.message?.ephemeralMessage?.message?.extendedTextMessage?.text;
+    const messageContent = this.extractMessageText(message);
 
     let fromJid = message.key.remoteJid;
 
@@ -1221,6 +1365,33 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       (key as any)?.participantAlt,
     ]);
     const canonicalFrom = this.normalizeJidForPending(fromJid);
+
+    if (!(canonicalFrom || fromJid).endsWith('@lid')) {
+      const assistantResponse = await this.notifyAssistantIncomingMessage({
+        connectionPhoneNumber: phone,
+        from: canonicalFrom || fromJid,
+        body: messageContent,
+        contactName: (message as any)?.pushName,
+        messageId: message.key.id,
+        sentAt: message.messageTimestamp
+          ? new Date(Number(message.messageTimestamp) * 1000).toISOString()
+          : new Date().toISOString(),
+      });
+
+      if (assistantResponse?.handled) {
+        if (assistantResponse.replyText?.trim()) {
+          await this.sendMessageSimple(
+            phone,
+            fromJid,
+            assistantResponse.replyText.trim(),
+            undefined,
+            assistantResponse.conversationId,
+            assistantResponse.automationUsage || undefined,
+          );
+        }
+        return;
+      }
+    }
 
     let pending = await this.pendingRepo.findOne({
       where: { phone: In(phoneVariations), expiresAt: MoreThan(new Date()) },
@@ -1653,6 +1824,8 @@ Esta e uma mensagem automatica.`;
     to: string,
     text: string,
     appointmentId?: number,
+    assistantConversationId?: string,
+    assistantAutomationUsage?: MessagePayload['assistantAutomationUsage'],
   ) {
     // Como 'to' aqui e um JID de uma mensagem recebida, ele ja e valido.
     await this.enqueueMessage(phone, {
@@ -1661,6 +1834,8 @@ Esta e uma mensagem automatica.`;
       isReply: true,
       skipValidation: true,
       appointmentId,
+      assistantConversationId,
+      assistantAutomationUsage,
     });
   }
 
@@ -1762,6 +1937,80 @@ Esta e uma mensagem automatica.`;
         appointmentId,
         type: payload.type,
         direction: payload.direction || null,
+      },
+    );
+  }
+
+  private async notifyAssistantIncomingMessage(payload: {
+    connectionPhoneNumber: string;
+    from: string;
+    body: string;
+    contactName?: string;
+    messageId?: string;
+    sentAt?: string;
+  }): Promise<AssistantAutomationResponse | null> {
+    try {
+      this.logApiCall('POST', 'http://localhost:3001/whatsapp/incoming-message', {
+        connectionPhoneNumber: payload.connectionPhoneNumber,
+        from: payload.from,
+        hasBody: Boolean(payload.body),
+      });
+
+      const response = await firstValueFrom(
+        this.httpService.post(
+          'http://localhost:3001/whatsapp/incoming-message',
+          payload,
+          {
+            headers: { 'x-internal-api-secret': process.env.API_SECRET },
+            timeout: this.HTTP_TIMEOUT,
+          },
+        ),
+      );
+
+      return response.data?.automation || response.data || null;
+    } catch (error) {
+      this.logger.error(
+        `[${payload.connectionPhoneNumber}] Falha ao publicar mensagem recebida no assistente: ${error.message}`,
+      );
+      return null;
+    }
+  }
+
+  private async notifyAssistantOutgoingMessage(payload: {
+    conversationId: string;
+    body: string;
+    providerMessageId: string;
+    sentAt?: string;
+    senderUserId?: number;
+    automationUsage?: MessagePayload['assistantAutomationUsage'];
+  }) {
+    await this.postInternalApiWithRetry(
+      'http://localhost:3001/whatsapp/outgoing-message',
+      payload,
+      `Falha ao registrar mensagem de saida da conversa ${payload.conversationId}`,
+      {
+        conversationId: payload.conversationId,
+        providerMessageId: payload.providerMessageId,
+      },
+    );
+  }
+
+  private async notifyAssistantManualOutgoingMessage(payload: {
+    connectionPhoneNumber: string;
+    to: string;
+    body: string;
+    contactName?: string;
+    messageId?: string;
+    sentAt?: string;
+  }) {
+    await this.postInternalApiWithRetry(
+      'http://localhost:3001/whatsapp/manual-outgoing-message',
+      payload,
+      `Falha ao registrar mensagem manual de saida para ${payload.to}`,
+      {
+        connectionPhoneNumber: payload.connectionPhoneNumber,
+        to: payload.to,
+        messageId: payload.messageId || null,
       },
     );
   }
