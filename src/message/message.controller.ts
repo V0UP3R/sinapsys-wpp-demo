@@ -74,7 +74,7 @@ export class MessageController {
       to: string;
       message: string;
       conversationId: string;
-      userId: number;
+      userId?: number;
     },
   ) {
     if (!body?.phone) {
@@ -95,7 +95,7 @@ export class MessageController {
       body.to,
       body.message,
       body.conversationId,
-      Number(body.userId),
+      body.userId !== undefined ? Number(body.userId) : undefined,
     );
 
     if (!result.success) {

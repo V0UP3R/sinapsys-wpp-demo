@@ -1048,6 +1048,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     return trimmed.replace(/\D/g, '');
   }
 
+  private buildProcessedMessageKey(phone: string, messageId: string) {
+    return `${phone}:${messageId}`;
+  }
+
   private buildPendingLookupCandidates(values: Array<string | undefined>): string[] {
     const candidates = new Set<string>();
 
@@ -1316,12 +1320,17 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Deduplicação de mensagens
-    if (this.processedMessages.has(message.key.id)) {
+    const processedMessageKey = this.buildProcessedMessageKey(
+      phone,
+      message.key.id,
+    );
+
+    if (this.processedMessages.has(processedMessageKey)) {
       this.logger.debug(`[${phone}] Mensagem ${message.key.id} ignorada (duplicada).`);
       return;
     }
-    this.processedMessages.add(message.key.id);
-    setTimeout(() => this.processedMessages.delete(message.key.id), 5000); // Limpa após 5 segundos
+    this.processedMessages.add(processedMessageKey);
+    setTimeout(() => this.processedMessages.delete(processedMessageKey), 5000); // Limpa após 5 segundos
 
     const messageContent = this.extractMessageText(message);
 
