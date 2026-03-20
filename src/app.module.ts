@@ -10,6 +10,26 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { PendingConfirmation } from './message/entities/message.entity';
 import { ConfigModule } from '@nestjs/config';
 
+function isDatabaseSslEnabled() {
+  const rawValue = process.env.DATABASE_SSL?.trim().toLowerCase();
+
+  if (rawValue === 'true' || rawValue === '1' || rawValue === 'require') {
+    return true;
+  }
+
+  if (rawValue === 'false' || rawValue === '0' || rawValue === 'disable') {
+    return false;
+  }
+
+  return process.env.NODE_ENV === 'production';
+}
+
+const databaseSsl = isDatabaseSslEnabled()
+  ? {
+      rejectUnauthorized: false,
+    }
+  : undefined;
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -24,14 +44,12 @@ import { ConfigModule } from '@nestjs/config';
     TypeOrmModule.forRoot({
       type: 'postgres',
       url: process.env.DATABASE_URL,
-      ssl: {
-        rejectUnauthorized: false,
-      },
-      extra: {
-        ssl: {
-          rejectUnauthorized: false,
-        },
-      },
+      ssl: databaseSsl,
+      extra: databaseSsl
+        ? {
+            ssl: databaseSsl,
+          }
+        : undefined,
       autoLoadEntities: true,
       synchronize: false,
     }),
