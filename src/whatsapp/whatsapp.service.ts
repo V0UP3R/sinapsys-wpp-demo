@@ -63,7 +63,7 @@ interface PendingDeliveryEntry {
   messageText?: string;
 }
 
-type AppointmentUpdateResult = 'updated' | 'terminal_not_available' | 'failed';
+type AppointmentUpdateResult = 'updated' | 'already_in_target_status' | 'terminal_not_available' | 'failed';
 type SendMessageResultReason = 'CLIENT_NOT_CONNECTED' | 'ENQUEUE_FAILED';
 
 interface SendMessageResult {
@@ -118,10 +118,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   // Timeout para chamadas HTTP (em ms)
   private readonly HTTP_TIMEOUT = 30000;
+  private readonly APPOINTMENT_ACTION_DEDUP_MS = 60000;
 
   // Cache de mensagens processadas para evitar duplicidade
   private processedMessages = new Set<string>();
   private systemSentMessageIds = new Map<string, number>();
+  private appointmentActionLocks = new Set<string>();
+  private recentCompletedAppointmentActions = new Map<string, number>();
 
   // Controla reconexao automatica por sessao
   private reconnectAllowed = new Set<string>();
@@ -1052,6 +1055,37 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     return `${phone}:${messageId}`;
   }
 
+  private buildAppointmentActionKey(appointmentId: number, action: 'CONFIRM' | 'CANCEL') {
+    return `${appointmentId}:${action}`;
+  }
+
+  private beginAppointmentAction(appointmentId: number, action: 'CONFIRM' | 'CANCEL') {
+    const actionKey = this.buildAppointmentActionKey(appointmentId, action);
+    const now = Date.now();
+    const lastCompletedAt = this.recentCompletedAppointmentActions.get(actionKey);
+
+    if (lastCompletedAt && now - lastCompletedAt < this.APPOINTMENT_ACTION_DEDUP_MS) {
+      return { actionKey, shouldProceed: false, reason: 'completed_recently' };
+    }
+
+    if (this.appointmentActionLocks.has(actionKey)) {
+      return { actionKey, shouldProceed: false, reason: 'in_flight' };
+    }
+
+    this.appointmentActionLocks.add(actionKey);
+    return { actionKey, shouldProceed: true, reason: null };
+  }
+
+  private completeAppointmentAction(actionKey: string) {
+    this.appointmentActionLocks.delete(actionKey);
+    this.recentCompletedAppointmentActions.set(actionKey, Date.now());
+    setTimeout(() => this.recentCompletedAppointmentActions.delete(actionKey), this.APPOINTMENT_ACTION_DEDUP_MS + 1000);
+  }
+
+  private abortAppointmentAction(actionKey: string) {
+    this.appointmentActionLocks.delete(actionKey);
+  }
+
   private buildPendingLookupCandidates(values: Array<string | undefined>): string[] {
     const candidates = new Set<string>();
 
@@ -1583,7 +1617,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           reasonLack: reasonLack || null,
           attempt,
         });
-        await firstValueFrom(
+        const response = await firstValueFrom(
           this.httpService.patch(
             `http://localhost:3001/appointment/block/${appointmentId}`,
             reasonLack ? { status, reasonLack } : { status },
@@ -1593,6 +1627,14 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             },
           ),
         );
+
+        if (response.data?.meta?.statusTransitionApplied === false) {
+          this.logger.warn(
+            `Bloco do appt ID ${appointmentId} ja estava em ${status}. Tratando como no-op idempotente.`,
+          );
+          return 'already_in_target_status';
+        }
+
         return 'updated';
       } catch (error) {
         const statusCode = this.extractHttpStatus(error);
@@ -1623,36 +1665,52 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
 
   private async confirm(conf: any, phone: string, from: string) {
-    const updateResult = await this.updateAppointmentStatusWithRetry(conf.appointmentId, 'Confirmado');
-    if (updateResult === 'terminal_not_available') {
-      await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
-      await this.sendMessageSimple(
-        phone,
-        from,
-        'Este agendamento foi alterado ou cancelado pela clinica e nao esta mais disponivel para confirmacao por aqui. Para confirmar outro horario, fale com a clinica.',
-      );
-      await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
+    const actionState = this.beginAppointmentAction(conf.appointmentId, 'CONFIRM');
+    if (!actionState.shouldProceed) {
+      this.logger.warn(`[${phone}] Confirmacao duplicada ignorada para appointment ${conf.appointmentId} (${actionState.reason}).`);
       return;
     }
-
-    if (updateResult !== 'updated') {
-      await this.sendMessageSimple(
-        phone,
-        from,
-        'Ocorreu um erro ao processar sua confirmacao. Por favor, tente novamente ou contate a clinica.',
-      );
-      return;
-    }
-
-    await this.notifyConfirmationEvent({
-      appointmentId: conf.appointmentId,
-      type: 'CONFIRMED',
-      direction: 'SYSTEM',
-      occurredAt: new Date().toISOString(),
-    });
 
     try {
-      const details = await this.getAppointmentDetails(conf.appointmentId);
+      const updateResult = await this.updateAppointmentStatusWithRetry(conf.appointmentId, 'Confirmado');
+      if (updateResult === 'terminal_not_available') {
+        await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+        await this.sendMessageSimple(
+          phone,
+          from,
+          'Este agendamento foi alterado ou cancelado pela clinica e nao esta mais disponivel para confirmacao por aqui. Para confirmar outro horario, fale com a clinica.',
+        );
+        await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
+        this.completeAppointmentAction(actionState.actionKey);
+        return;
+      }
+
+      if (updateResult === 'already_in_target_status') {
+        await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+        this.logger.warn(`[${phone}] Confirmacao do appointment ${conf.appointmentId} ignorada porque o bloco ja estava confirmado.`);
+        this.completeAppointmentAction(actionState.actionKey);
+        return;
+      }
+
+      if (updateResult !== 'updated') {
+        await this.sendMessageSimple(
+          phone,
+          from,
+          'Ocorreu um erro ao processar sua confirmacao. Por favor, tente novamente ou contate a clinica.',
+        );
+        this.abortAppointmentAction(actionState.actionKey);
+        return;
+      }
+
+      await this.notifyConfirmationEvent({
+        appointmentId: conf.appointmentId,
+        type: 'CONFIRMED',
+        direction: 'SYSTEM',
+        occurredAt: new Date().toISOString(),
+      });
+
+      try {
+        const details = await this.getAppointmentDetails(conf.appointmentId);
 
       // Determina se é paciente menor (tem responsável)
       const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
@@ -1707,62 +1765,83 @@ Ate la!
 Esta e uma mensagem automatica. Por favor, nao responda.`;
       }
 
-      await this.sendMessageSimple(
-        phone,
-        from,
-        confirmationMessage,
-        conf.appointmentId,
-      );
-    } catch (error) {
-      this.logger.error(`Erro ao enviar confirmacao detalhada: ${error.message}`);
-      await this.sendMessageSimple(
-        phone,
-        from,
-        'Seu agendamento foi confirmado com sucesso!',
-        conf.appointmentId,
-      );
-    }
+        await this.sendMessageSimple(
+          phone,
+          from,
+          confirmationMessage,
+          conf.appointmentId,
+        );
+      } catch (error) {
+        this.logger.error(`Erro ao enviar confirmacao detalhada: ${error.message}`);
+        await this.sendMessageSimple(
+          phone,
+          from,
+          'Seu agendamento foi confirmado com sucesso!',
+          conf.appointmentId,
+        );
+      }
 
-    // Deleta TODOS os registros pendentes deste appointment (evita duplicatas órfãs)
-    await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
-    await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
+      // Deleta TODOS os registros pendentes deste appointment (evita duplicatas órfãs)
+      await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+      await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
+      this.completeAppointmentAction(actionState.actionKey);
+    } catch (error) {
+      this.abortAppointmentAction(actionState.actionKey);
+      throw error;
+    }
   }
 
   private async cancel(conf: any, phone: string, from: string) {
-    const updateResult = await this.updateAppointmentStatusWithRetry(
-      conf.appointmentId,
-      'Cancelado',
-      'Cancelado pelo WhatsApp',
-    );
-    if (updateResult === 'terminal_not_available') {
-      await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
-      await this.sendMessageSimple(
-        phone,
-        from,
-        'Este agendamento foi alterado ou cancelado pela clinica e nao esta mais disponivel para cancelamento por aqui. Em caso de duvidas, fale com a clinica.',
-      );
-      await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
+    const actionState = this.beginAppointmentAction(conf.appointmentId, 'CANCEL');
+    if (!actionState.shouldProceed) {
+      this.logger.warn(`[${phone}] Cancelamento duplicado ignorado para appointment ${conf.appointmentId} (${actionState.reason}).`);
       return;
     }
-
-    if (updateResult !== 'updated') {
-      await this.sendMessageSimple(
-        phone,
-        from,
-        'Ocorreu um erro ao processar seu cancelamento. Por favor, tente novamente ou contate a clinica.',
-      );
-      return;
-    }
-
-    await this.notifyConfirmationEvent({
-      appointmentId: conf.appointmentId,
-      type: 'CANCELED',
-      direction: 'SYSTEM',
-      occurredAt: new Date().toISOString(),
-    });
 
     try {
-      const details = await this.getAppointmentDetails(conf.appointmentId);
+      const updateResult = await this.updateAppointmentStatusWithRetry(
+        conf.appointmentId,
+        'Cancelado',
+        'Cancelado pelo WhatsApp',
+      );
+      if (updateResult === 'terminal_not_available') {
+        await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+        await this.sendMessageSimple(
+          phone,
+          from,
+          'Este agendamento foi alterado ou cancelado pela clinica e nao esta mais disponivel para cancelamento por aqui. Em caso de duvidas, fale com a clinica.',
+        );
+        await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
+        this.completeAppointmentAction(actionState.actionKey);
+        return;
+      }
+
+      if (updateResult === 'already_in_target_status') {
+        await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+        this.logger.warn(`[${phone}] Cancelamento do appointment ${conf.appointmentId} ignorado porque o bloco ja estava cancelado.`);
+        this.completeAppointmentAction(actionState.actionKey);
+        return;
+      }
+
+      if (updateResult !== 'updated') {
+        await this.sendMessageSimple(
+          phone,
+          from,
+          'Ocorreu um erro ao processar seu cancelamento. Por favor, tente novamente ou contate a clinica.',
+        );
+        this.abortAppointmentAction(actionState.actionKey);
+        return;
+      }
+
+      await this.notifyConfirmationEvent({
+        appointmentId: conf.appointmentId,
+        type: 'CANCELED',
+        direction: 'SYSTEM',
+        occurredAt: new Date().toISOString(),
+      });
+
+      try {
+        const details = await this.getAppointmentDetails(conf.appointmentId);
 
       // Determina se é paciente menor (tem responsável)
       const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
@@ -1806,26 +1885,31 @@ Esperamos ve-lo em breve.
 Esta e uma mensagem automatica.`;
       }
 
-      await this.sendMessageSimple(
-        phone,
-        from,
-        cancellationMessage,
-        conf.appointmentId,
-      );
-    } catch (error) {
-      this.logger.error(`Erro ao enviar cancelamento detalhado: ${error.message}`);
-      const fallbackMessage = 'Seu agendamento foi cancelado conforme solicitado. Caso deseje remarcar, por favor, entre em contato diretamente com a clinica.';
-      await this.sendMessageSimple(
-        phone,
-        from,
-        fallbackMessage,
-        conf.appointmentId,
-      );
-    }
+        await this.sendMessageSimple(
+          phone,
+          from,
+          cancellationMessage,
+          conf.appointmentId,
+        );
+      } catch (error) {
+        this.logger.error(`Erro ao enviar cancelamento detalhado: ${error.message}`);
+        const fallbackMessage = 'Seu agendamento foi cancelado conforme solicitado. Caso deseje remarcar, por favor, entre em contato diretamente com a clinica.';
+        await this.sendMessageSimple(
+          phone,
+          from,
+          fallbackMessage,
+          conf.appointmentId,
+        );
+      }
 
-    // Deleta TODOS os registros pendentes deste appointment (evita duplicatas órfãs)
-    await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
-    await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
+      // Deleta TODOS os registros pendentes deste appointment (evita duplicatas órfãs)
+      await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+      await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
+      this.completeAppointmentAction(actionState.actionKey);
+    } catch (error) {
+      this.abortAppointmentAction(actionState.actionKey);
+      throw error;
+    }
   }
 
   private async sendMessageSimple(
@@ -2068,7 +2152,7 @@ Esta e uma mensagem automatica.`;
         ),
       );
     } catch (e) {
-      this.logger.error(`[${payload.phoneNumber}] Falha ao notificar o frontend sobre desconex?o: ${e.message}`);
+      this.logger.error(`[${payload.phoneNumber}] Falha ao notificar o frontend sobre desconexão: ${e.message}`);
     }
   }
 
