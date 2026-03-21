@@ -286,7 +286,17 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     for (const conn of conns) {
       this.logger.log(`Restaurando sessao para ${conn.phoneNumber}...`);
       this.reconnectAllowed.add(conn.phoneNumber);
-      await this.connect(conn.phoneNumber);
+      try {
+        await this.connect(conn.phoneNumber);
+      } catch (error) {
+        this.logger.error(
+          `[${conn.phoneNumber}] Falha ao restaurar sessao no bootstrap: ${error.message}`,
+        );
+        await this.markConnectionAsDisconnected(
+          conn.phoneNumber,
+          'Falha ao restaurar sessao no bootstrap.',
+        );
+      }
     }
   }
 
@@ -317,6 +327,45 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Número de telefone inválido');
     }
     return path.join(this.SESSIONS_DIR, `session-${sanitizedPhone}`);
+  }
+
+  private async markConnectionAsDisconnected(
+    phone: string,
+    reason?: string,
+  ): Promise<void> {
+    this.connectingSessions.delete(phone);
+    this.sessions.delete(phone);
+    this.syncedSessions.delete(phone);
+    this.stopHealthCheck(phone);
+    this.reconnectAllowed.delete(phone);
+    this.clearQrRequest(phone);
+
+    const reconnectTimer = this.reconnectTimers.get(phone);
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      this.reconnectTimers.delete(phone);
+    }
+
+    try {
+      await this.connRepo.update(
+        { phoneNumber: phone },
+        { status: 'disconnected', qrCodeUrl: null },
+      );
+    } catch (error) {
+      this.logger.error(
+        `[${phone}] Falha ao persistir status disconnected: ${error.message}`,
+      );
+    }
+
+    await this.notifyFrontendStatus({
+      phoneNumber: phone,
+      status: 'disconnected',
+      qrCodeUrl: null,
+    });
+
+    if (reason) {
+      this.logger.warn(`[${phone}] ${reason}`);
+    }
   }
 
   async connect(phone: string, options?: { requestQr?: boolean }): Promise<string | null> {
@@ -634,6 +683,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         this.connectingSessions.delete(phone);
         this.reconnectAllowed.delete(phone);
         this.logger.error(`[${phone}] Erro ao conectar: ${err.message}`);
+        await this.markConnectionAsDisconnected(
+          phone,
+          'Sessao marcada como desconectada apos falha na inicializacao da conexao.',
+        );
         reject(err);
       }
     });
@@ -1333,9 +1386,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     const conversationJid = key.remoteJid || (key as any)?.remoteJidAlt || '';
     const isDirectConversation = /@(s\.whatsapp\.net|c\.us|lid)$/.test(conversationJid);
     if (!isDirectConversation) {
-      this.logger.debug(
-        `[${phone}] Mensagem ${message.key.id} ignorada (conversa nao direta: ${conversationJid}).`,
-      );
       return;
     }
 
@@ -1346,9 +1396,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     if (messageTimestamp) {
       const messageAgeSeconds = Math.floor(Date.now() / 1000) - Number(messageTimestamp);
       if (messageAgeSeconds > MAX_MESSAGE_AGE_SECONDS) {
-        this.logger.debug(
-          `[${phone}] Mensagem ${message.key.id} ignorada (antiga: ${Math.round(messageAgeSeconds)}s, limite: ${MAX_MESSAGE_AGE_SECONDS}s).`,
-        );
         return;
       }
     }
@@ -1360,7 +1407,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     );
 
     if (this.processedMessages.has(processedMessageKey)) {
-      this.logger.debug(`[${phone}] Mensagem ${message.key.id} ignorada (duplicada).`);
       return;
     }
     this.processedMessages.add(processedMessageKey);
@@ -1500,9 +1546,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         // Sem PendingConfirmation = silêncio total.
         // Não responder a conversas que não são de confirmação de agendamento,
         // mesmo que a mensagem pareça com "sim", "ok", etc.
-        this.logger.debug(
-          `[${phone}] Nenhuma confirmação pendente para ${canonicalFrom || fromJid}. Ignorando.`,
-        );
         return;
       }
     }
@@ -2124,9 +2167,6 @@ Esta e uma mensagem automatica.`;
       const tooSoon = last ? now - last.lastSentAt < this.FRONTEND_STATUS_DEDUP_MS : false;
 
       if (last && isSameStatus && isSameQr && tooSoon) {
-        this.logger.debug(
-          `[${payload.phoneNumber}] Ignorando status duplicado para frontend (status=${payload.status || 'n/a'}).`,
-        );
         return;
       }
 
@@ -2585,9 +2625,6 @@ Deseja tambem *confirmar* ou *cancelar* este horario?`;
     }
 
     this.pendingDelivery.delete(messageId);
-    this.logger.debug(
-      `[${phone}] Mensagem ${messageId} confirmada pelo servidor (status=${status}).`,
-    );
 
     if (!delivery.appointmentId) {
       return;
