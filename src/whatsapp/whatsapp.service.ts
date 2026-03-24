@@ -1606,12 +1606,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       return this.cancel(pending, phone, fromJid);
     }
 
-    await this.sendMessageSimple(
-      phone,
-      fromJid,
-      'Desculpe, não entendi. Por favor, responda novamente para eu entender melhor.',
-      pending.appointmentId,
-    );
+    // await this.sendMessageSimple(
+    //   phone,
+    //   fromJid,
+    //   'Desculpe, não entendi. Por favor, responda novamente para eu entender melhor.',
+    //   pending.appointmentId,
+    // );
   }
 
 
