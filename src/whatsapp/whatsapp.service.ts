@@ -1098,10 +1098,16 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       if (trimmed.endsWith('@lid')) {
         return trimmed;
       }
-      return trimmed.replace('@s.whatsapp.net', '@c.us');
+
+      const [userPart, domainPart = ''] = trimmed.split('@');
+      const normalizedUserPart = userPart.replace(/:\d+$/, '');
+      const normalizedDomain =
+        domainPart === 's.whatsapp.net' ? 'c.us' : domainPart;
+
+      return `${normalizedUserPart}@${normalizedDomain}`;
     }
 
-    return trimmed.replace(/\D/g, '');
+    return trimmed.replace(/:\d+$/, '').replace(/\D/g, '');
   }
 
   private buildProcessedMessageKey(phone: string, messageId: string) {
@@ -1498,9 +1504,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           .replace('@c.us', '')
           .replace('@s.whatsapp.net', '')
           .replace('@lid', '');
+        const normalizedPhone = cleanedPhone.replace(/:\d+$/, '');
         const response = await firstValueFrom(
           this.httpService.get(
-            `http://localhost:3001/appointment/confirmation-message/by-phone/${cleanedPhone}`,
+            `http://localhost:3001/appointment/confirmation-message/by-phone/${normalizedPhone}`,
             {
               headers: { 'x-internal-api-secret': process.env.API_SECRET },
               timeout: this.HTTP_TIMEOUT,
