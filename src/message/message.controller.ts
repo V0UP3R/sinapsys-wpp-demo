@@ -1,4 +1,11 @@
-import { BadRequestException, Body, Controller, Post, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  InternalServerErrorException,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/auth.guard';
 import { Public } from 'src/auth/decorators/public.decorator';
 import { InternalApiGuard } from 'src/auth/internal-api.guard';
@@ -16,11 +23,22 @@ export class MessageController {
       throw new BadRequestException('Campo "phone" é obrigatório.');
     }
 
-    const qrCodeUrl = await this.whatsappService.connect(body.phone, {
-      requestQr: true,
-    });
+    try {
+      const qrCodeUrl = await this.whatsappService.connect(body.phone, {
+        requestQr: true,
+      });
 
-    return { qrCodeUrl };
+      return { qrCodeUrl };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Falha ao conectar o WhatsApp.';
+
+      if (/qr code|sess[aã]o expirada|logged out|401/i.test(message)) {
+        throw new BadRequestException(message);
+      }
+
+      throw new InternalServerErrorException(message);
+    }
   }
 
   /** Disparar mensagem usando sessão do usuário autenticado */

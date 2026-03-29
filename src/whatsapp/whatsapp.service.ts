@@ -633,6 +633,51 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               return;
             }
 
+            if (statusCode === DisconnectReason.loggedOut || reason === '401') {
+              this.logger.warn(
+                `[${phone}] Desconectado com sessao invalida (logged out/401). Limpando sessao local para exigir novo QR.`,
+              );
+
+              const existingTimer = this.reconnectTimers.get(phone);
+              if (existingTimer) {
+                clearTimeout(existingTimer);
+                this.reconnectTimers.delete(phone);
+              }
+
+              if (fs.existsSync(sessionPath)) {
+                fs.rmSync(sessionPath, { recursive: true, force: true });
+              }
+
+              if (this.canEmitQr(phone)) {
+                this.logger.log(
+                  `[${phone}] Solicitação de QR ativa. Reiniciando conexão com sessão limpa...`,
+                );
+
+                if (!promiseResolved) {
+                  promiseResolved = true;
+                  clearTimeout(timeout);
+                  try {
+                    const qrResult = await this.connect(phone, {
+                      requestQr: true,
+                    });
+                    resolve(qrResult);
+                  } catch (reconnectError) {
+                    reject(reconnectError);
+                  }
+                }
+              } else if (!promiseResolved) {
+                promiseResolved = true;
+                clearTimeout(timeout);
+                reject(
+                  new Error(
+                    'Sessão expirada. Solicite um novo QR Code para reconectar o WhatsApp.',
+                  ),
+                );
+              }
+
+              return;
+            }
+
             if (statusCode !== DisconnectReason.loggedOut) {
               const reconnectDelayMs =
                 statusCode === DisconnectReason.restartRequired ? 1000 : 5000;
@@ -652,7 +697,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               }
               const timer = setTimeout(() => {
                 this.reconnectTimers.delete(phone);
-                this.connect(phone);
+                this.connect(phone).catch((err) => {
+                  this.logger.error(
+                    `[${phone}] Falha na reconexao automatica: ${err.message}`,
+                  );
+                });
               }, reconnectDelayMs);
               this.reconnectTimers.set(phone, timer);
             } else {
@@ -666,7 +715,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               }
               const timer = setTimeout(() => {
                 this.reconnectTimers.delete(phone);
-                this.connect(phone);
+                this.connect(phone).catch((err) => {
+                  this.logger.error(
+                    `[${phone}] Falha na reconexao automatica apos logged out: ${err.message}`,
+                  );
+                });
               }, 5000);
               this.reconnectTimers.set(phone, timer);
             }
@@ -728,6 +781,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private async enqueueMessage(phone: string, payload: MessagePayload) {
     if (!this.sessions.has(phone)) {
       this.logger.warn(`[${phone}] Tentativa de enfileirar mensagem falhou: cliente não conectado.`);
+      return false;
+    }
+
+    if (!this.isWhatsappRecipientAllowed(payload.to)) {
+      await this.handleBlockedOutgoingByAllowlist(phone, payload);
       return false;
     }
 
@@ -1108,6 +1166,92 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     }
 
     return trimmed.replace(/:\d+$/, '').replace(/\D/g, '');
+  }
+
+  private buildWhatsappPhoneVariants(value?: string): string[] {
+    const normalized = this.normalizeJidForPending(value);
+    if (!normalized || normalized.endsWith('@lid')) {
+      return [];
+    }
+
+    const digits = normalized.includes('@')
+      ? normalized.split('@')[0].replace(/\D/g, '')
+      : normalized.replace(/\D/g, '');
+
+    if (!digits) {
+      return [];
+    }
+
+    const variants = new Set<string>([digits]);
+
+    if (digits.startsWith('55')) {
+      if (digits.length === 13) {
+        variants.add(`${digits.slice(0, 4)}${digits.slice(5)}`);
+      } else if (digits.length === 12) {
+        variants.add(`${digits.slice(0, 4)}9${digits.slice(4)}`);
+      }
+    }
+
+    return Array.from(variants);
+  }
+
+  private getWhatsappAllowlist(): string[] {
+    const rawAllowlist = process.env.WHATSAPP_ALLOWLIST?.trim();
+    if (!rawAllowlist) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        rawAllowlist
+          .split(/[,\s;]+/)
+          .flatMap((value) => this.buildWhatsappPhoneVariants(value))
+          .filter(Boolean),
+      ),
+    );
+  }
+
+  private isWhatsappRecipientAllowed(value?: string): boolean {
+    const allowlist = this.getWhatsappAllowlist();
+    if (!allowlist.length) {
+      return true;
+    }
+
+    const variants = this.buildWhatsappPhoneVariants(value);
+    if (!variants.length) {
+      return false;
+    }
+
+    return variants.some((variant) => allowlist.includes(variant));
+  }
+
+  private async handleBlockedOutgoingByAllowlist(
+    phone: string,
+    payload: MessagePayload,
+  ) {
+    const normalizedTarget = this.normalizeJidForPending(payload.to) || payload.to;
+    const blockMessage = `Envio bloqueado pela allowlist do WhatsApp para o destino ${normalizedTarget}.`;
+
+    this.logger.warn(`[${phone}] ${blockMessage}`);
+
+    if (payload.appointmentId) {
+      await this.notifyConfirmationStatus({
+        appointmentId: payload.appointmentId,
+        status: 'FAILED',
+        failedAt: new Date().toISOString(),
+        recipientPhone: normalizedTarget,
+        errorMessage: blockMessage,
+      });
+      await this.notifyConfirmationEvent({
+        appointmentId: payload.appointmentId,
+        type: 'FAILED',
+        direction: 'OUTGOING',
+        messageText: payload.text,
+        phone: normalizedTarget,
+        errorMessage: blockMessage,
+        occurredAt: new Date().toISOString(),
+      });
+    }
   }
 
   private buildProcessedMessageKey(phone: string, messageId: string) {
