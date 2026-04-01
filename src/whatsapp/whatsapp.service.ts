@@ -74,6 +74,9 @@ interface SendMessageResult {
 
 interface AssistantAutomationResponse {
   handled?: boolean;
+  queuedForDebounce?: boolean;
+  queuedForHuman?: boolean;
+  mode?: 'ASSISTANT' | 'TRANSIENT_CONFIRMATION';
   shouldContinueLegacyConfirmation?: boolean;
   conversationId?: string;
   replyText?: string | null;
@@ -1628,6 +1631,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             assistantResponse.automationUsage || undefined,
           );
         }
+        return;
+      }
+
+      if (
+        assistantResponse?.queuedForDebounce ||
+        assistantResponse?.queuedForHuman
+      ) {
         return;
       }
     }
