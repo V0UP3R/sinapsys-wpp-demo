@@ -44,6 +44,18 @@ interface MessagePayload {
   appointmentId?: number;
   skipValidation?: boolean; // Flag para pular a validação em respostas
   createPendingConfirmation?: boolean; // Flag para criar PendingConfirmation após envio efetivo
+  triggerType?: string | null;
+  triggerSource?: string | null;
+  confirmationContext?: {
+    clinicId?: number | null;
+    patientName?: string | null;
+    recipientName?: string | null;
+    professionalName?: string | null;
+    clinicName?: string | null;
+    blockStartTime?: string | null;
+    blockEndTime?: string | null;
+    timezone?: string | null;
+  } | null;
   assistantConversationId?: string;
   assistantSenderUserId?: number;
   assistantAutomationUsage?: {
@@ -111,6 +123,13 @@ type PendingSelectionState = {
   expiresAt: number;
 };
 
+type PendingConfirmationMetadata = {
+  source?: string | null;
+  triggerType?: string | null;
+  confirmationContext?: NonNullable<MessagePayload['confirmationContext']> | null;
+  expiresAt: number;
+};
+
 @Injectable()
 export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private sessions = new Map<string, WASocket>();
@@ -173,6 +192,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   // Rastreia mensagens enviadas aguardando confirmação de entrega do WhatsApp
   private pendingDelivery = new Map<string, PendingDeliveryEntry>();
   private pendingSelectionStates = new Map<string, PendingSelectionState>();
+  private pendingConfirmationMetadata = new Map<number, PendingConfirmationMetadata>();
 
   // Health check intervals por sessão
   private healthCheckIntervals = new Map<string, NodeJS.Timeout>();
@@ -1120,6 +1140,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               phone,
               payload.to,
               payload.appointmentId,
+              payload,
             );
           }
         }
@@ -1430,6 +1451,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     to: string,
     text: string,
     appointmentId: number,
+    metadata?: Pick<
+      MessagePayload,
+      'triggerSource' | 'triggerType' | 'confirmationContext'
+    >,
   ): Promise<SendMessageResult> {
     const sock = this.sessions.get(phone);
     if (!sock || !sock.user) {
@@ -1448,6 +1473,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       skipValidation: false,
       appointmentId,
       createPendingConfirmation: true,
+      triggerSource: metadata?.triggerSource ?? null,
+      triggerType: metadata?.triggerType ?? null,
+      confirmationContext: metadata?.confirmationContext ?? null,
     });
     if (!enqueued) {
       this.logger.warn(`[${phone}] Enfileiramento falhou para o agendamento ${appointmentId}.`);
@@ -1516,6 +1544,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     phone: string,
     to: string,
     appointmentId: number,
+    payload?: Pick<
+      MessagePayload,
+      'triggerSource' | 'triggerType' | 'confirmationContext'
+    >,
   ): Promise<void> {
     const cleanedTo = to.replace(/\D/g, '');
     const normalizedTarget = this.normalizeJidForPending(to);
@@ -1537,6 +1569,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           expiresAt,
         });
         await this.pendingRepo.save(pending);
+        this.pendingConfirmationMetadata.set(appointmentId, {
+          source: payload?.triggerSource ?? null,
+          triggerType: payload?.triggerType ?? null,
+          confirmationContext: payload?.confirmationContext ?? null,
+          expiresAt: expiresAt.getTime(),
+        });
 
         this.logger.log(
           `[${phone}] PendingConfirmation criado para appointment ${appointmentId} ` +
@@ -1709,6 +1747,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           const expiresAt = new Date(now.getTime() + this.PENDING_CONFIRMATION_TTL_MS);
           try {
             await this.pendingRepo.delete({ appointmentId: response.data.appointmentId });
+            this.pendingConfirmationMetadata.delete(response.data.appointmentId);
             const newPending = this.pendingRepo.create({
               id: uuidv4(),
               appointmentId: response.data.appointmentId,
@@ -1952,6 +1991,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       const updateResult = await this.updateAppointmentStatusWithRetry(conf.appointmentId, 'Confirmado');
       if (updateResult === 'terminal_not_available') {
         await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+        this.pendingConfirmationMetadata.delete(conf.appointmentId);
         await this.sendMessageSimple(
           phone,
           from,
@@ -1964,6 +2004,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
       if (updateResult === 'already_in_target_status') {
         await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+        this.pendingConfirmationMetadata.delete(conf.appointmentId);
         this.logger.warn(`[${phone}] Confirmacao do appointment ${conf.appointmentId} ignorada porque o bloco ja estava confirmado.`);
         this.completeAppointmentAction(actionState.actionKey);
         return;
@@ -2060,6 +2101,7 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
 
       // Deleta TODOS os registros pendentes deste appointment (evita duplicatas órfãs)
       await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+      this.pendingConfirmationMetadata.delete(conf.appointmentId);
       await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
       this.completeAppointmentAction(actionState.actionKey);
     } catch (error) {
@@ -2083,6 +2125,7 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
       );
       if (updateResult === 'terminal_not_available') {
         await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+        this.pendingConfirmationMetadata.delete(conf.appointmentId);
         await this.sendMessageSimple(
           phone,
           from,
@@ -2095,6 +2138,7 @@ Esta e uma mensagem automatica. Por favor, nao responda.`;
 
       if (updateResult === 'already_in_target_status') {
         await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+        this.pendingConfirmationMetadata.delete(conf.appointmentId);
         this.logger.warn(`[${phone}] Cancelamento do appointment ${conf.appointmentId} ignorado porque o bloco ja estava cancelado.`);
         this.completeAppointmentAction(actionState.actionKey);
         return;
@@ -2181,6 +2225,7 @@ Esta e uma mensagem automatica.`;
 
       // Deleta TODOS os registros pendentes deste appointment (evita duplicatas órfãs)
       await this.pendingRepo.delete({ appointmentId: conf.appointmentId });
+      this.pendingConfirmationMetadata.delete(conf.appointmentId);
       await this.checkAndNotifyNextPendingAppointment(phone, from, conf.appointmentId);
       this.completeAppointmentAction(actionState.actionKey);
     } catch (error) {
@@ -2991,6 +3036,48 @@ Esta e uma mensagem automatica.`;
     return sameClinic && sameDay && sameWindow;
   }
 
+  private buildPendingDetailsFromMetadata(
+    appointmentId: number,
+    metadata?: PendingConfirmationMetadata,
+  ) {
+    const context = metadata?.confirmationContext;
+    if (!context?.blockStartTime || !context?.blockEndTime) {
+      return null;
+    }
+
+    return {
+      id: appointmentId,
+      date: context.blockStartTime,
+      blockStartTime: context.blockStartTime,
+      blockEndTime: context.blockEndTime,
+      clinic: {
+        id: context.clinicId ?? null,
+        timezone: context.timezone || DEFAULT_TIMEZONE,
+        name: context.clinicName || '',
+      },
+      professional: {
+        user: {
+          name: context.professionalName || '',
+        },
+      },
+      patient: {
+        personalInfo: {
+          name: context.patientName || '',
+        },
+        patientResponsible: context.recipientName
+          ? [
+              {
+                responsible: {
+                  name: context.recipientName,
+                },
+              },
+            ]
+          : [],
+      },
+      sendReminder: metadata?.source === 'MANUAL_UI' ? true : undefined,
+    };
+  }
+
   private async collectPendingTargets(
     pendingEntries: PendingConfirmation[],
     processedAppointmentId?: number,
@@ -3009,11 +3096,15 @@ Esta e uma mensagem automatica.`;
     }
 
     for (const pendingEntry of pendingEntries) {
+      const metadata = this.pendingConfirmationMetadata.get(
+        pendingEntry.appointmentId,
+      );
       try {
-        const details = await this.getAppointmentDetails(pendingEntry.appointmentId);
+        let details = await this.getAppointmentDetails(pendingEntry.appointmentId);
 
-        if (details.sendReminder === false) {
+        if (details.sendReminder === false && metadata?.source !== 'MANUAL_UI') {
           await this.pendingRepo.delete({ id: pendingEntry.id });
+          this.pendingConfirmationMetadata.delete(pendingEntry.appointmentId);
           this.logger.log(
             `PendingConfirmation ${pendingEntry.id} removida (appt ${pendingEntry.appointmentId}) - sendReminder desativado.`,
           );
@@ -3043,9 +3134,32 @@ Esta e uma mensagem automatica.`;
           pendingIds: [pendingEntry.id],
         });
       } catch (error) {
-        this.logger.error(
-          `Falha ao carregar pendencia ${pendingEntry.appointmentId}: ${error.message}`,
+        const fallbackDetails = this.buildPendingDetailsFromMetadata(
+          pendingEntry.appointmentId,
+          metadata,
         );
+
+        if (!fallbackDetails) {
+          this.logger.error(
+            `Falha ao carregar pendencia ${pendingEntry.appointmentId}: ${error.message}`,
+          );
+          continue;
+        }
+
+        const existingTarget = targets.find((target) =>
+          this.isSameBlock(target.details, fallbackDetails),
+        );
+
+        if (existingTarget) {
+          existingTarget.pendingIds.push(pendingEntry.id);
+          continue;
+        }
+
+        targets.push({
+          appointmentId: pendingEntry.appointmentId,
+          details: fallbackDetails,
+          pendingIds: [pendingEntry.id],
+        });
       }
     }
 

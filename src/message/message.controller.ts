@@ -47,7 +47,24 @@ export class MessageController {
   @UseGuards(InternalApiGuard)
   async sendMessage(
     @Body()
-    body: { phone: string; to: string; message: string; appointmentId: number },
+    body: {
+      phone: string;
+      to: string;
+      message: string;
+      appointmentId: number;
+      triggerType?: string | null;
+      triggerSource?: string | null;
+      confirmationContext?: {
+        clinicId?: number | null;
+        patientName?: string | null;
+        recipientName?: string | null;
+        professionalName?: string | null;
+        clinicName?: string | null;
+        blockStartTime?: string | null;
+        blockEndTime?: string | null;
+        timezone?: string | null;
+      } | null;
+    },
   ) {
     if (!body?.phone) {
       throw new BadRequestException('Campo "phone" é obrigatório.');
@@ -69,6 +86,11 @@ export class MessageController {
       body.to,
       body.message,
       appointmentId,
+      {
+        triggerType: body.triggerType ?? null,
+        triggerSource: body.triggerSource ?? null,
+        confirmationContext: body.confirmationContext ?? null,
+      },
     );
 
     if (!result.success) {
