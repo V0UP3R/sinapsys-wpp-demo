@@ -88,6 +88,29 @@ interface AssistantAutomationResponse {
   } | null;
 }
 
+type PendingIntentAction = 'CONFIRM' | 'CANCEL';
+
+type PendingTarget = {
+  appointmentId: number;
+  details: any;
+  pendingIds: string[];
+};
+
+type PendingSelectionOption = {
+  appointmentId: number;
+  label: string;
+  normalizedProfessionalName: string;
+  normalizedDate: string;
+  normalizedTime: string;
+};
+
+type PendingSelectionState = {
+  action?: PendingIntentAction | null;
+  recipientName: string;
+  options: PendingSelectionOption[];
+  expiresAt: number;
+};
+
 @Injectable()
 export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private sessions = new Map<string, WASocket>();
@@ -149,6 +172,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   // Rastreia mensagens enviadas aguardando confirmação de entrega do WhatsApp
   private pendingDelivery = new Map<string, PendingDeliveryEntry>();
+  private pendingSelectionStates = new Map<string, PendingSelectionState>();
 
   // Health check intervals por sessão
   private healthCheckIntervals = new Map<string, NodeJS.Timeout>();
@@ -1642,12 +1666,20 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    let pending = await this.pendingRepo.findOne({
+    const selectionStateEntry = this.getPendingSelectionState([
+      canonicalFrom,
+      fromJid,
+      ...phoneVariations,
+    ]);
+    const pendingForPhone = await this.pendingRepo.find({
       where: { phone: In(phoneVariations), expiresAt: MoreThan(new Date()) },
       order: { createdAt: 'DESC' },
     });
 
-    if (!pending) {
+    let resolvedPending: { appointmentId: number } | null = null;
+    let resolvedAction: PendingIntentAction | null = null;
+
+    if (!pendingForPhone.length) {
       this.logger.warn(
         `[${phone}] Sem pendência local para ${canonicalFrom || fromJid}. Tentando fallback via API...`,
       );
@@ -1685,15 +1717,14 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               expiresAt,
             });
             await this.pendingRepo.save(newPending);
-            pending = newPending;
+            resolvedPending = { appointmentId: newPending.appointmentId };
           } catch (dbError) {
             this.logger.error(
               `[${phone}] Falha ao recriar pendência via fallback: ${dbError.message}`,
             );
             // Objeto em memória para continuar o fluxo mesmo sem persistir
-            pending = {
+            resolvedPending = {
               appointmentId: response.data.appointmentId,
-              phone: canonicalFrom || `${cleanedPhone}@c.us`,
             } as any;
           }
         }
@@ -1703,16 +1734,97 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         );
       }
 
-      if (!pending) {
+      if (!resolvedPending) {
         // Sem PendingConfirmation = silêncio total.
         // Não responder a conversas que não são de confirmação de agendamento,
         // mesmo que a mensagem pareça com "sim", "ok", etc.
         return;
       }
+    } else {
+      const detectedIntent = await this.detectPendingIntent(phone, messageContent);
+      const detectedAction = this.mapIntentToAction(detectedIntent);
+
+      if (selectionStateEntry) {
+        const selectedOption = this.extractPendingSelectionOption(
+          messageContent,
+          selectionStateEntry.state.options,
+        );
+        const selectionAction =
+          selectionStateEntry.state.action || detectedAction;
+
+        if (selectedOption && selectionAction) {
+          this.clearPendingSelectionState([
+            selectionStateEntry.key,
+            canonicalFrom,
+            fromJid,
+            ...phoneVariations,
+          ]);
+          resolvedPending = { appointmentId: selectedOption.appointmentId };
+          resolvedAction = selectionAction;
+        } else {
+          if (detectedAction && selectionStateEntry.state.action !== detectedAction) {
+            this.setPendingSelectionState(selectionStateEntry.key, {
+              ...selectionStateEntry.state,
+              action: detectedAction,
+            });
+          }
+
+          const recipientName =
+            selectionStateEntry.state.options[0]?.label ? 'tudo bem' : 'tudo bem';
+          await this.sendMessageSimple(
+            phone,
+            fromJid,
+            this.buildPendingSelectionReply(
+              selectionStateEntry.state.recipientName,
+              selectionStateEntry.state.options,
+              selectionStateEntry.state.action || detectedAction,
+            ),
+          );
+          return;
+        }
+      } else {
+        const targets = await this.collectPendingTargets(pendingForPhone);
+
+        if (!targets.length) {
+          return;
+        }
+
+        if (targets.length > 1) {
+          const recipientName =
+            targets[0].details.patient.patientResponsible?.[0]?.responsible?.name ||
+            targets[0].details.patient.personalInfo.name;
+          const options = targets.map((target) =>
+            this.buildPendingSelectionOption(target.details),
+          );
+          const selectionKey =
+            canonicalFrom || this.normalizeJidForPending(fromJid) || fromJid;
+
+          this.setPendingSelectionState(selectionKey, {
+            action: detectedAction,
+            recipientName,
+            options,
+            expiresAt: Date.now() + this.PENDING_CONFIRMATION_TTL_MS,
+          });
+
+          await this.sendMessageSimple(
+            phone,
+            fromJid,
+            this.buildPendingSelectionReply(recipientName, options, detectedAction),
+          );
+          return;
+        }
+
+        resolvedPending = { appointmentId: targets[0].appointmentId };
+        resolvedAction = detectedAction;
+      }
+    }
+
+    if (!resolvedPending || !resolvedAction) {
+      return;
     }
 
     await this.notifyConfirmationEvent({
-      appointmentId: pending.appointmentId,
+      appointmentId: resolvedPending.appointmentId,
       type: 'INCOMING',
       direction: 'INCOMING',
       messageText: messageContent,
@@ -1720,51 +1832,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       occurredAt: new Date().toISOString(),
     });
 
-    const normalizedText = this.normalize(messageContent);
-
-    const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
-    const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];
-
-    const threshold = 2;
-
-    // Função auxiliar para encontrar a menor distância em uma lista de palavras
-    const getMinDistance = (text: string, keywords: string[]): number => {
-      return Math.min(
-        ...keywords.map(kw => {
-          const dist = this.levenshtein(text, kw);
-          if (kw.length <= 3 && dist > 1) return 99;
-          return dist;
-        })
-      );
-    };
-
-    // Calculo da distância mínima para cada intenção
-    const confirmDistance = getMinDistance(normalizedText, confirmKeywords);
-    const cancelDistance = getMinDistance(normalizedText, cancelKeywords);
-
-    this.logger.log(`[${phone}] Distâncias para "${normalizedText}": Confirmar=${confirmDistance}, Cancelar=${cancelDistance}`);
-
-    // Intenção de CONFIRMAR é clara e está dentro do limite
-    if (confirmDistance <= threshold && confirmDistance < cancelDistance) {
-      this.logger.log(`[${phone}] Intenção 'Confirmar' detectada para "${normalizedText}"`);
-      return this.confirm(pending, phone, fromJid);
+    if (resolvedAction === 'CONFIRM') {
+      return this.confirm(resolvedPending, phone, fromJid);
     }
 
-    // Intenção de CANCELAR é clara e está dentro do limite
-    if (cancelDistance <= threshold && cancelDistance < confirmDistance) {
-      this.logger.log(`[${phone}] Intenção 'Cancelar' detectada para "${normalizedText}"`);
-      return this.cancel(pending, phone, fromJid);
-    }
-
-    const gptIntent = await this.classifyIntentWithGpt(messageContent);
-    if (gptIntent === 'confirmar') {
-      this.logger.log(`[${phone}] Intenção 'Confirmar' detectada via GPT para "${messageContent}"`);
-      return this.confirm(pending, phone, fromJid);
-    }
-
-    if (gptIntent === 'cancelar') {
-      this.logger.log(`[${phone}] Intenção 'Cancelar' detectada via GPT para "${messageContent}"`);
-      return this.cancel(pending, phone, fromJid);
+    if (resolvedAction === 'CANCEL') {
+      return this.cancel(resolvedPending, phone, fromJid);
     }
 
     // await this.sendMessageSimple(
@@ -2381,6 +2454,227 @@ Esta e uma mensagem automatica.`;
       .trim();
   }
 
+  private mapIntentToAction(
+    intent: 'confirmar' | 'cancelar' | 'inconclusivo' | null,
+  ): PendingIntentAction | null {
+    if (intent === 'confirmar') return 'CONFIRM';
+    if (intent === 'cancelar') return 'CANCEL';
+    return null;
+  }
+
+  private getPendingSelectionState(
+    keys: Array<string | undefined>,
+  ): { key: string; state: PendingSelectionState } | null {
+    const now = Date.now();
+
+    for (const rawKey of keys) {
+      const key = this.normalizeJidForPending(rawKey || '') || rawKey || '';
+      if (!key) continue;
+
+      const state = this.pendingSelectionStates.get(key);
+      if (!state) continue;
+
+      if (state.expiresAt <= now) {
+        this.pendingSelectionStates.delete(key);
+        continue;
+      }
+
+      return { key, state };
+    }
+
+    return null;
+  }
+
+  private setPendingSelectionState(
+    key: string,
+    state: PendingSelectionState,
+  ) {
+    this.pendingSelectionStates.set(key, state);
+  }
+
+  private clearPendingSelectionState(keys: Array<string | undefined>) {
+    for (const rawKey of keys) {
+      const key = this.normalizeJidForPending(rawKey || '') || rawKey || '';
+      if (!key) continue;
+      this.pendingSelectionStates.delete(key);
+    }
+  }
+
+  private extractPendingSelectionOption(
+    message: string,
+    options: PendingSelectionOption[],
+  ): PendingSelectionOption | null {
+    if (!options.length) return null;
+
+    const normalized = this.normalize(message);
+    if (!normalized) return null;
+
+    const candidateMatch =
+      normalized.match(/(?:opcao|opção|item|numero)\s+(\d{1,2})/) ||
+      normalized.match(/\b(\d{1,2})\b/);
+
+    if (candidateMatch?.[1]) {
+      const optionIndex = Number(candidateMatch[1]);
+      if (
+        Number.isInteger(optionIndex) &&
+        optionIndex >= 1 &&
+        optionIndex <= options.length
+      ) {
+        return options[optionIndex - 1];
+      }
+    }
+
+    const scored = options.map((option) => {
+      let score = 0;
+
+      if (
+        option.normalizedProfessionalName &&
+        normalized.includes(option.normalizedProfessionalName)
+      ) {
+        score += 5;
+      } else if (option.normalizedProfessionalName) {
+        const matchedTokens = option.normalizedProfessionalName
+          .split(' ')
+          .filter(
+            (token) =>
+              token.length >= 4 &&
+              !['com', 'at', 'to', 'fono', 'dra', 'dr'].includes(token),
+          )
+          .filter((token) => normalized.includes(token));
+        score += matchedTokens.length * 2;
+      }
+
+      if (option.normalizedDate && normalized.includes(option.normalizedDate)) {
+        score += 3;
+      }
+
+      if (option.normalizedTime && normalized.includes(option.normalizedTime)) {
+        score += 3;
+      }
+
+      return { option, score };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    const best = scored[0];
+    const second = scored[1];
+
+    if (best && best.score > 0 && (!second || best.score > second.score)) {
+      return best.option;
+    }
+
+    return null;
+  }
+
+  private buildPendingSelectionReply(
+    recipientName: string,
+    options: PendingSelectionOption[],
+    action?: PendingIntentAction | null,
+  ) {
+    const actionText =
+      action === 'CONFIRM'
+        ? 'para confirmar'
+        : action === 'CANCEL'
+          ? 'para cancelar'
+          : '';
+    const intro = actionText
+      ? `Obrigado, ${recipientName}! Encontrei mais de um atendimento pendente ${actionText}.`
+      : `Obrigado, ${recipientName}! Encontrei mais de um atendimento pendente.`;
+    const lines = options.map((option, index) => `${index + 1}. ${option.label}`);
+
+    return `${intro}\n\nResponda com o numero da opcao desejada ou diga, por exemplo, "Confirmar 1" ou "Cancelar 2":\n${lines.join('\n')}`;
+  }
+
+  private buildFollowUpSinglePendingMessage(details: any) {
+    const timezone = details.clinic?.timezone || DEFAULT_TIMEZONE;
+    const patientName = details.patient.personalInfo.name;
+    const professionalName = details.professional.user.name;
+    const appointmentDate = moment(details.date).tz(timezone).format('DD/MM/YYYY');
+    const appointmentTime = moment(details.blockStartTime).tz(timezone).format('HH:mm');
+    const responsibleInfo = details.patient.patientResponsible?.[0]?.responsible;
+    const recipientName = responsibleInfo?.name || patientName;
+    const subject = responsibleInfo
+      ? `o agendamento de ${patientName}`
+      : 'seu agendamento';
+
+    return `Obrigado, ${recipientName}! Notamos que voce tambem tem ${subject} com o(a) profissional ${professionalName} no dia ${appointmentDate} as ${appointmentTime} que ainda nao foi respondido.\n\nDeseja tambem *confirmar* ou *cancelar* este horario?`;
+  }
+
+  private buildPendingSelectionOption(details: any): PendingSelectionOption {
+    const timezone = details.clinic?.timezone || DEFAULT_TIMEZONE;
+    const professionalName = details.professional.user.name;
+    const formattedDate = moment(details.date).tz(timezone).format('DD/MM/YYYY');
+    const startTime = moment(details.blockStartTime).tz(timezone).format('HH:mm');
+    const endTime = moment(details.blockEndTime).tz(timezone).format('HH:mm');
+
+    return {
+      appointmentId: details.id,
+      label: `${formattedDate} ${startTime} as ${endTime} com ${professionalName}`,
+      normalizedProfessionalName: this.normalize(professionalName),
+      normalizedDate: this.normalize(formattedDate),
+      normalizedTime: this.normalize(startTime),
+    };
+  }
+
+  private async detectPendingIntent(
+    phone: string,
+    messageContent: string,
+  ): Promise<'confirmar' | 'cancelar' | 'inconclusivo'> {
+    const normalizedText = this.normalize(messageContent);
+
+    const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
+    const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];
+    const threshold = 2;
+
+    const getMinDistance = (text: string, keywords: string[]): number => {
+      return Math.min(
+        ...keywords.map((kw) => {
+          const dist = this.levenshtein(text, kw);
+          if (kw.length <= 3 && dist > 1) return 99;
+          return dist;
+        }),
+      );
+    };
+
+    const confirmDistance = getMinDistance(normalizedText, confirmKeywords);
+    const cancelDistance = getMinDistance(normalizedText, cancelKeywords);
+
+    this.logger.log(
+      `[${phone}] Distâncias para "${normalizedText}": Confirmar=${confirmDistance}, Cancelar=${cancelDistance}`,
+    );
+
+    if (confirmDistance <= threshold && confirmDistance < cancelDistance) {
+      this.logger.log(
+        `[${phone}] Intenção 'Confirmar' detectada para "${normalizedText}"`,
+      );
+      return 'confirmar';
+    }
+
+    if (cancelDistance <= threshold && cancelDistance < confirmDistance) {
+      this.logger.log(
+        `[${phone}] Intenção 'Cancelar' detectada para "${normalizedText}"`,
+      );
+      return 'cancelar';
+    }
+
+    const gptIntent = await this.classifyIntentWithGpt(messageContent);
+    if (gptIntent === 'confirmar') {
+      this.logger.log(
+        `[${phone}] Intenção 'Confirmar' detectada via GPT para "${messageContent}"`,
+      );
+      return 'confirmar';
+    }
+
+    if (gptIntent === 'cancelar') {
+      this.logger.log(
+        `[${phone}] Intenção 'Cancelar' detectada via GPT para "${messageContent}"`,
+      );
+      return 'cancelar';
+    }
+
+    return 'inconclusivo';
+  }
+
   private async classifyIntentWithGpt(
     messageText: string,
   ): Promise<'confirmar' | 'cancelar' | 'inconclusivo'> {
@@ -2697,6 +2991,67 @@ Esta e uma mensagem automatica.`;
     return sameClinic && sameDay && sameWindow;
   }
 
+  private async collectPendingTargets(
+    pendingEntries: PendingConfirmation[],
+    processedAppointmentId?: number,
+  ): Promise<PendingTarget[]> {
+    const targets: PendingTarget[] = [];
+    let processedDetails: any = null;
+
+    if (processedAppointmentId) {
+      try {
+        processedDetails = await this.getAppointmentDetails(processedAppointmentId);
+      } catch (error) {
+        this.logger.warn(
+          `Nao foi possivel carregar detalhes do appointment ${processedAppointmentId} para filtro de bloco: ${error.message}`,
+        );
+      }
+    }
+
+    for (const pendingEntry of pendingEntries) {
+      try {
+        const details = await this.getAppointmentDetails(pendingEntry.appointmentId);
+
+        if (details.sendReminder === false) {
+          await this.pendingRepo.delete({ id: pendingEntry.id });
+          this.logger.log(
+            `PendingConfirmation ${pendingEntry.id} removida (appt ${pendingEntry.appointmentId}) - sendReminder desativado.`,
+          );
+          continue;
+        }
+
+        if (processedDetails && this.isSameBlock(processedDetails, details)) {
+          await this.pendingRepo.delete({ id: pendingEntry.id });
+          this.logger.log(
+            `PendingConfirmation ${pendingEntry.id} removida (appt ${pendingEntry.appointmentId}) por pertencer ao mesmo bloco do appointment ${processedAppointmentId}.`,
+          );
+          continue;
+        }
+
+        const existingTarget = targets.find((target) =>
+          this.isSameBlock(target.details, details),
+        );
+
+        if (existingTarget) {
+          existingTarget.pendingIds.push(pendingEntry.id);
+          continue;
+        }
+
+        targets.push({
+          appointmentId: pendingEntry.appointmentId,
+          details,
+          pendingIds: [pendingEntry.id],
+        });
+      } catch (error) {
+        this.logger.error(
+          `Falha ao carregar pendencia ${pendingEntry.appointmentId}: ${error.message}`,
+        );
+      }
+    }
+
+    return targets;
+  }
+
   private async checkAndNotifyNextPendingAppointment(
     phone: string,
     from: string,
@@ -2713,67 +3068,56 @@ Esta e uma mensagem automatica.`;
       return;
     }
 
-    let processedDetails: any = null;
-    if (processedAppointmentId) {
-      try {
-        processedDetails = await this.getAppointmentDetails(processedAppointmentId);
-      } catch (error) {
-        this.logger.warn(
-          `Nao foi possivel carregar detalhes do appointment ${processedAppointmentId} para filtro de bloco: ${error.message}`,
-        );
-      }
+    const targets = await this.collectPendingTargets(
+      pendingForPhone,
+      processedAppointmentId,
+    );
+
+    if (!targets.length) {
+      return;
     }
 
-    for (const nextPending of pendingForPhone) {
-      if (processedAppointmentId && nextPending.appointmentId === processedAppointmentId) {
-        continue;
-      }
-
+    if (targets.length === 1) {
+      const nextTarget = targets[0];
       try {
-        const details = await this.getAppointmentDetails(nextPending.appointmentId);
-
-        // Nao envia follow-up para agendamentos com sendReminder desativado
-        if (details.sendReminder === false) {
-          await this.pendingRepo.delete({ id: nextPending.id });
-          this.logger.log(
-            `PendingConfirmation ${nextPending.id} removida (appt ${nextPending.appointmentId}) - sendReminder desativado.`,
-          );
-          continue;
-        }
-
-        // Nao envia follow-up se a pendencia for do mesmo bloco do appointment ja processado.
-        if (processedDetails && this.isSameBlock(processedDetails, details)) {
-          await this.pendingRepo.delete({ id: nextPending.id });
-          this.logger.log(
-            `PendingConfirmation ${nextPending.id} removida (appt ${nextPending.appointmentId}) por pertencer ao mesmo bloco do appointment ${processedAppointmentId}.`,
-          );
-          continue;
-        }
-
-        // Usa timezone da clinica ou fallback para timezone padrao
-        const timezone = details.clinic?.timezone || DEFAULT_TIMEZONE;
-
-        const patientName = details.patient.personalInfo.name;
-        const professionalName = details.professional.user.name;
-        const appointmentDate = moment(details.date).tz(timezone).format('DD/MM/YYYY');
-        const appointmentTime = moment(details.blockStartTime).tz(timezone).format('HH:mm');
-
-        const followUpMessage = `Obrigado, ${patientName}! Notamos que voce tambem tem um agendamento com o(a) profissional ${professionalName} no dia ${appointmentDate} as ${appointmentTime} que ainda nao foi respondido.
-
-Deseja tambem *confirmar* ou *cancelar* este horario?`;
-
         await this.sendMessageSimple(
           phone,
           from,
-          followUpMessage,
-          nextPending.appointmentId,
+          this.buildFollowUpSinglePendingMessage(nextTarget.details),
+          nextTarget.appointmentId,
         );
-        this.logger.log(`Enviada mensagem de acompanhamento para o agendamento ${nextPending.appointmentId} para o numero ${from}.`);
-        return;
+        this.logger.log(
+          `Enviada mensagem de acompanhamento para o agendamento ${nextTarget.appointmentId} para o numero ${from}.`,
+        );
       } catch (error) {
-        this.logger.error(`Falha ao notificar proxima pendencia para ${from} (appt ${nextPending.appointmentId}): ${error.message}`);
+        this.logger.error(
+          `Falha ao notificar proxima pendencia para ${from} (appt ${nextTarget.appointmentId}): ${error.message}`,
+        );
       }
+      return;
     }
+
+    const firstTarget = targets[0];
+    const recipientName =
+      firstTarget.details.patient.patientResponsible?.[0]?.responsible?.name ||
+      firstTarget.details.patient.personalInfo.name;
+    const options = targets.map((target) =>
+      this.buildPendingSelectionOption(target.details),
+    );
+    const selectionKey = this.normalizeJidForPending(from) || from;
+
+    this.setPendingSelectionState(selectionKey, {
+      action: null,
+      recipientName,
+      options,
+      expiresAt: Date.now() + this.PENDING_CONFIRMATION_TTL_MS,
+    });
+
+    await this.sendMessageSimple(
+      phone,
+      from,
+      this.buildPendingSelectionReply(recipientName, options, null),
+    );
   }
   private async handleDeliveryAcknowledged(
     phone: string,

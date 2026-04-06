@@ -69,4 +69,51 @@ describe('WhatsappService retry policy', () => {
     expect(result).toBe(false);
     expect(httpService.post).toHaveBeenCalledTimes(1);
   });
+
+  it('usa o nome do responsavel no follow-up de paciente menor', () => {
+    const message = (service as any).buildFollowUpSinglePendingMessage({
+      date: '2026-04-10T16:00:00.000Z',
+      blockStartTime: '2026-04-10T16:00:00.000Z',
+      blockEndTime: '2026-04-10T20:00:00.000Z',
+      clinic: { timezone: 'America/Sao_Paulo' },
+      professional: { user: { name: 'AT VITORIA XAIANE' } },
+      patient: {
+        personalInfo: { name: 'THEO TABAY SANTOS' },
+        patientResponsible: [
+          {
+            responsible: {
+              name: 'SARA CAROLINA TABAY SANTOS',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(message).toContain('Obrigado, SARA CAROLINA TABAY SANTOS!');
+    expect(message).toContain('o agendamento de THEO TABAY SANTOS');
+  });
+
+  it('resolve selecao pendente pelo nome do profissional', () => {
+    const option = (service as any).extractPendingSelectionOption(
+      'o da vitoria',
+      [
+        {
+          appointmentId: 1,
+          label: '10/04/2026 13:00 as 17:00 com AT VITORIA XAIANE',
+          normalizedProfessionalName: 'at vitoria xaiane',
+          normalizedDate: '10042026',
+          normalizedTime: '1300',
+        },
+        {
+          appointmentId: 2,
+          label: '06/04/2026 08:00 as 12:00 com AT OUTRO',
+          normalizedProfessionalName: 'at outro',
+          normalizedDate: '06042026',
+          normalizedTime: '0800',
+        },
+      ],
+    );
+
+    expect(option?.appointmentId).toBe(1);
+  });
 });
