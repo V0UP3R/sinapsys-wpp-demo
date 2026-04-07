@@ -19,7 +19,7 @@ import * as util from 'util';
 import makeWASocket, {
   Browsers,
   DisconnectReason,
-  fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
   useMultiFileAuthState,
   WAMessage,
   WAMessageUpdate,
@@ -139,8 +139,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WhatsappService.name);
   private readonly openai?: OpenAI;
   private readonly SESSIONS_DIR = path.join(process.cwd(), '.baileys_auth');
-  private readonly DEFAULT_WA_VERSION: [number, number, number] = [2, 3000, 1028401180];
+  private readonly DEFAULT_WA_VERSION: [number, number, number] = [2,3000,1036846624];
   private cachedWaVersion?: [number, number, number];
+  private cachedWaVersionAt?: number;
+  private readonly WA_VERSION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
   // Gerenciador de filas de mensagens para controlar o fluxo de envio
   private messageQueues = new Map<string, {
@@ -179,7 +181,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   // Controla quando o QR pode ser emitido para o frontend
   private qrRequests = new Map<string, number>();
+  private qrRestartAttempts = new Map<string, number>();
   private readonly QR_REQUEST_TTL_MS = 5 * 60 * 1000;
+  private readonly MAX_QR_RESTART_ATTEMPTS = 1;
 
   // Cache de status para evitar spam de notificacoes ao frontend
   private lastFrontendStatus = new Map<string, {
@@ -288,14 +292,20 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async getSocketVersion(): Promise<[number, number, number]> {
-    if (this.cachedWaVersion) {
+    const now = Date.now();
+    if (
+      this.cachedWaVersion &&
+      this.cachedWaVersionAt &&
+      now - this.cachedWaVersionAt < this.WA_VERSION_CACHE_TTL_MS
+    ) {
       return this.cachedWaVersion;
     }
 
     try {
-      const latest = await fetchLatestBaileysVersion();
+      const latest = await fetchLatestWaWebVersion();
       if (latest?.version?.length === 3) {
         this.cachedWaVersion = latest.version as [number, number, number];
+        this.cachedWaVersionAt = now;
         this.logger.log(
           `[WA] Usando versão ${this.cachedWaVersion.join('.')} (isLatest=${latest.isLatest}).`,
         );
@@ -303,16 +313,20 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       }
     } catch (error) {
       this.logger.warn(
-        `[WA] Falha ao buscar versão mais recente. Usando fallback ${this.DEFAULT_WA_VERSION.join('.')}: ${error.message}`,
+        `[WA] Falha ao buscar versão atual do WhatsApp Web. Usando fallback ${this.DEFAULT_WA_VERSION.join('.')}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
     this.cachedWaVersion = this.DEFAULT_WA_VERSION;
+    this.cachedWaVersionAt = now;
     return this.cachedWaVersion;
   }
 
-  private requestQrForPhone(phone: string) {
+  private requestQrForPhone(phone: string, resetAttempts: boolean = true) {
     this.qrRequests.set(phone, Date.now() + this.QR_REQUEST_TTL_MS);
+    if (resetAttempts || !this.qrRestartAttempts.has(phone)) {
+      this.qrRestartAttempts.set(phone, 0);
+    }
   }
 
   private canEmitQr(phone: string): boolean {
@@ -327,6 +341,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   private clearQrRequest(phone: string) {
     this.qrRequests.delete(phone);
+    this.qrRestartAttempts.delete(phone);
   }
 
   async onModuleInit() {
@@ -416,7 +431,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async connect(phone: string, options?: { requestQr?: boolean }): Promise<string | null> {
+  async connect(
+    phone: string,
+    options?: { requestQr?: boolean; preserveQrAttemptState?: boolean },
+  ): Promise<string | null> {
     if (this.sessions.has(phone) || this.connectingSessions.has(phone)) {
       this.logger.warn(`[${phone}] Conexão já estabelecida ou em progresso.`);
       return null;
@@ -438,7 +456,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
 
     if (options?.requestQr) {
-      this.requestQrForPhone(phone);
+      this.requestQrForPhone(phone, !options?.preserveQrAttemptState);
       this.disabledPhones.delete(phone);
       // Permite reconexao automatica mesmo antes de chegar em "connection=open".
       this.reconnectAllowed.add(phone);
@@ -468,7 +486,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
           browser: Browsers.macOS('Desktop'),
           logger: pino({ level: 'silent' }) as any,
           version: socketVersion,
-          syncFullHistory: true,
+          syncFullHistory: false,
           keepAliveIntervalMs: 15000,
           connectTimeoutMs: 60000,
           getMessage: async (key) => {
@@ -509,8 +527,16 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             this.connectingSessions.delete(phone);
             this.clearQrRequest(phone);
             this.reconnectAllowed.delete(phone);
-            this.disabledPhones.add(phone);
-            reject(new Error(`[${phone}] Tempo esgotado para conectar.`));
+            if (!options?.requestQr) {
+              this.disabledPhones.add(phone);
+            }
+            reject(
+              new Error(
+                options?.requestQr
+                  ? `[${phone}] Tempo esgotado para gerar o QR Code.`
+                  : `[${phone}] Tempo esgotado para conectar.`,
+              ),
+            );
           }
         }, 30000); // 30 segundos de timeout
 
@@ -594,6 +620,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             this.sessions.set(phone, sock);
             this.reconnectAllowed.add(phone);
             this.connectingSessions.delete(phone);
+            if (!this.syncedSessions.has(phone)) {
+              this.syncedSessions.add(phone);
+              this.logger.log(
+                `[${phone}] Sessão marcada como pronta para envio após connection.open.`,
+              );
+            }
             this.clearQrRequest(phone);
             await this.connRepo.update({ phoneNumber: phone }, { status: 'connected', qrCodeUrl: null });
             await this.notifyFrontendStatus({ phoneNumber: phone, status: 'connected', qrCodeUrl: null });
@@ -644,6 +676,57 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
               if (fs.existsSync(sessionPath)) {
                 fs.rmSync(sessionPath, { recursive: true, force: true });
+              }
+
+              if (this.canEmitQr(phone)) {
+                const qrRestartAttempt =
+                  (this.qrRestartAttempts.get(phone) || 0) + 1;
+                this.qrRestartAttempts.set(phone, qrRestartAttempt);
+
+                if (qrRestartAttempt > this.MAX_QR_RESTART_ATTEMPTS) {
+                  this.logger.warn(
+                    `[${phone}] Limite de tentativas de reinício para QR atingido após erro 405.`,
+                  );
+                  this.clearQrRequest(phone);
+                  this.reconnectAllowed.delete(phone);
+
+                  if (!promiseResolved) {
+                    promiseResolved = true;
+                    clearTimeout(timeout);
+                    reject(
+                      new Error(
+                        'Não foi possível gerar o QR Code após limpar a sessão corrompida.',
+                      ),
+                    );
+                  }
+                  return;
+                }
+
+                this.logger.log(
+                  `[${phone}] Solicitação de QR ativa. Reiniciando conexão com sessão limpa após erro 405...` +
+                    ` tentativa=${qrRestartAttempt}/${this.MAX_QR_RESTART_ATTEMPTS}`,
+                );
+
+                const existingTimer = this.reconnectTimers.get(phone);
+                if (existingTimer) {
+                  clearTimeout(existingTimer);
+                  this.reconnectTimers.delete(phone);
+                }
+
+                if (!promiseResolved) {
+                  promiseResolved = true;
+                  clearTimeout(timeout);
+                  try {
+                    const qrResult = await this.connect(phone, {
+                      requestQr: true,
+                      preserveQrAttemptState: true,
+                    });
+                    resolve(qrResult);
+                  } catch (reconnectError) {
+                    reject(reconnectError);
+                  }
+                }
+                return;
               }
 
               if (shouldReconnect) {
