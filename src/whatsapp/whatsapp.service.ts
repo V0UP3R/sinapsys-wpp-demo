@@ -2627,7 +2627,7 @@ Esta e uma mensagem automatica.`;
       : `${recipientName}! Encontrei mais de um atendimento pendente.`;
     const lines = options.map((option, index) => `${index + 1}. ${option.label}`);
 
-    return `${intro}\n\nResponda com o numero da opcao desejada ou diga, por exemplo, "Confirmar 1" ou "Cancelar 2":\n${lines.join('\n')}`;
+    return `${intro}\n\nResponda com o numero da opcao desejada ou diga, por exemplo, "Confirmar 1" ou "Cancelar 2":\n\n${lines.join('\n')}`;
   }
 
   private buildFollowUpSinglePendingMessage(details: any) {
