@@ -42,6 +42,7 @@ interface MessagePayload {
   text: string;
   isReply: boolean;
   appointmentId?: number;
+  syncRetryCount?: number;
   skipValidation?: boolean; // Flag para pular a validação em respostas
   createPendingConfirmation?: boolean; // Flag para criar PendingConfirmation após envio efetivo
   triggerType?: string | null;
@@ -602,7 +603,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
               this.logger.log(
                 `[${phone}] Retomando fila apos reconexao com ${sessionQueue.queue.length} mensagens pendentes.`,
               );
-              void this.processMessageQueue(phone);
+              this.resumeQueuedMessages(phone, 1000);
             }
 
             if (!promiseResolved) {
@@ -931,12 +932,35 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     const startTime = Date.now();
     while (!this.syncedSessions.has(phone)) {
       if (Date.now() - startTime > timeoutMs) {
-        this.logger.warn(`[${phone}] Timeout aguardando sincronização. Prosseguindo mesmo assim.`);
+        this.logger.warn(`[${phone}] Timeout aguardando sincronização. Envio adiado até a sessão estabilizar.`);
         return false;
       }
       await new Promise(resolve => setTimeout(resolve, 500));
     }
     return true;
+  }
+
+  private resumeQueuedMessages(phone: string, delayMs: number = 0) {
+    const sessionQueue = this.messageQueues.get(phone);
+    if (!sessionQueue || sessionQueue.isProcessing || sessionQueue.queue.length === 0) {
+      return;
+    }
+
+    const resume = () => {
+      const latestQueue = this.messageQueues.get(phone);
+      if (!latestQueue || latestQueue.isProcessing || latestQueue.queue.length === 0) {
+        return;
+      }
+
+      void this.processMessageQueue(phone);
+    };
+
+    if (delayMs > 0) {
+      setTimeout(resume, delayMs);
+      return;
+    }
+
+    resume();
   }
 
   /**
@@ -1012,7 +1036,21 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         // Só espera sincronização para envios em massa; respostas devem ser rápidas
         if (!payload.isReply && !this.syncedSessions.has(phone)) {
           this.logger.log(`[${phone}] Aguardando sincronização da sessão antes de enviar mensagens...`);
-          await this.waitForSync(phone, 30000);
+          const synced = await this.waitForSync(phone, 30000);
+          if (!synced) {
+            const syncRetryCount = (payload.syncRetryCount || 0) + 1;
+            payload.syncRetryCount = syncRetryCount;
+            sessionQueue.queue.unshift(payload);
+            sessionQueue.isProcessing = false;
+
+            const retryDelayMs = Math.min(syncRetryCount * 15000, 60000);
+            this.logger.warn(
+              `[${phone}] Sessão ainda não sincronizada; envio automático adiado por ${retryDelayMs}ms.` +
+                ` appointmentId=${payload.appointmentId || 'n/a'} tentativaSync=${syncRetryCount}`,
+            );
+            this.resumeQueuedMessages(phone, retryDelayMs);
+            return;
+          }
         }
         let finalJid: string | null = null;
 
