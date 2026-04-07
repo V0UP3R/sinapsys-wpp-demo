@@ -116,4 +116,51 @@ describe('WhatsappService retry policy', () => {
 
     expect(option?.appointmentId).toBe(1);
   });
+
+  it('ordena opcoes pendentes pelo horario do atendimento', () => {
+    const sorted = (service as any).sortPendingTargetsBySchedule([
+      {
+        appointmentId: 16477,
+        pendingIds: ['b'],
+        details: {
+          date: '2026-05-01T11:00:00.000Z',
+          blockStartTime: '2026-05-01T11:00:00.000Z',
+        },
+      },
+      {
+        appointmentId: 16475,
+        pendingIds: ['a'],
+        details: {
+          date: '2026-04-24T11:00:00.000Z',
+          blockStartTime: '2026-04-24T11:00:00.000Z',
+        },
+      },
+    ]);
+
+    expect(sorted.map((target) => target.appointmentId)).toEqual([
+      16475,
+      16477,
+    ]);
+  });
+
+  it('deixa explicito que nenhuma acao foi executada na mensagem de ambiguidade', () => {
+    const reply = (service as any).buildPendingSelectionReply(
+      'ANE LIMA BARBOSA',
+      [
+        {
+          appointmentId: 1,
+          label: '01/05/2026 08:00 as 10:00 com TO - ISABELA COSTA',
+          normalizedProfessionalName: 'to isabela costa',
+          normalizedDate: '01052026',
+          normalizedTime: '0800',
+        },
+      ],
+      'CONFIRM',
+    );
+
+    expect(reply).toContain(
+      'Encontrei mais de um atendimento pendente para confirmar, entao ainda nao foi feita nenhuma alteracao',
+    );
+  });
+
 });

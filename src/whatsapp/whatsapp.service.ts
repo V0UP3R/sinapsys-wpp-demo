@@ -1851,10 +1851,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
             this.buildPendingSelectionReply(recipientName, options, detectedAction),
           );
           return;
+        } else {
+          resolvedPending = { appointmentId: targets[0].appointmentId };
+          resolvedAction = detectedAction;
         }
-
-        resolvedPending = { appointmentId: targets[0].appointmentId };
-        resolvedAction = detectedAction;
       }
     }
 
@@ -2618,13 +2618,13 @@ Esta e uma mensagem automatica.`;
   ) {
     const actionText =
       action === 'CONFIRM'
-        ? 'para confirmar'
+        ? 'confirmar'
         : action === 'CANCEL'
-          ? 'para cancelar'
+          ? 'cancelar'
           : '';
     const intro = actionText
-      ? `Obrigado, ${recipientName}! Encontrei mais de um atendimento pendente ${actionText}.`
-      : `Obrigado, ${recipientName}! Encontrei mais de um atendimento pendente.`;
+      ? `${recipientName}! Encontrei mais de um atendimento pendente para ${actionText}, entao ainda nao foi feita nenhuma alteracao.`
+      : `${recipientName}! Encontrei mais de um atendimento pendente.`;
     const lines = options.map((option, index) => `${index + 1}. ${option.label}`);
 
     return `${intro}\n\nResponda com o numero da opcao desejada ou diga, por exemplo, "Confirmar 1" ou "Cancelar 2":\n${lines.join('\n')}`;
@@ -3078,6 +3078,29 @@ Esta e uma mensagem automatica.`;
     };
   }
 
+  private getPendingTargetSortTimestamp(details: any): number {
+    const candidate = details?.blockStartTime || details?.date || null;
+    if (!candidate) {
+      return Number.MAX_SAFE_INTEGER;
+    }
+
+    const timestamp = moment(candidate).valueOf();
+    return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
+  }
+
+  private sortPendingTargetsBySchedule(targets: PendingTarget[]): PendingTarget[] {
+    return [...targets].sort((left, right) => {
+      const leftTimestamp = this.getPendingTargetSortTimestamp(left.details);
+      const rightTimestamp = this.getPendingTargetSortTimestamp(right.details);
+
+      if (leftTimestamp !== rightTimestamp) {
+        return leftTimestamp - rightTimestamp;
+      }
+
+      return left.appointmentId - right.appointmentId;
+    });
+  }
+
   private async collectPendingTargets(
     pendingEntries: PendingConfirmation[],
     processedAppointmentId?: number,
@@ -3163,9 +3186,8 @@ Esta e uma mensagem automatica.`;
       }
     }
 
-    return targets;
+    return this.sortPendingTargetsBySchedule(targets);
   }
-
   private async checkAndNotifyNextPendingAppointment(
     phone: string,
     from: string,
