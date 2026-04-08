@@ -1900,6 +1900,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         // mesmo que a mensagem pareça com "sim", "ok", etc.
         return;
       }
+
+      const detectedIntent = await this.detectPendingIntent(phone, messageContent);
+      resolvedAction = this.mapIntentToAction(detectedIntent);
     } else {
       const detectedIntent = await this.detectPendingIntent(phone, messageContent);
       const detectedAction = this.mapIntentToAction(detectedIntent);
