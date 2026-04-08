@@ -1904,7 +1904,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       const detectedIntent = await this.detectPendingIntent(phone, messageContent);
       resolvedAction = this.mapIntentToAction(detectedIntent);
     } else {
-      const detectedIntent = await this.detectPendingIntent(phone, messageContent);
+      const detectedIntent = await this.detectPendingIntent(phone, messageContent, {
+        allowNumericShortcuts: !selectionStateEntry,
+      });
       const detectedAction = this.mapIntentToAction(detectedIntent);
 
       if (selectionStateEntry) {
@@ -1982,18 +1984,28 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    if (!resolvedPending || !resolvedAction) {
-      return;
+    if (resolvedPending?.appointmentId) {
+      await this.notifyConfirmationEvent({
+        appointmentId: resolvedPending.appointmentId,
+        type: 'INCOMING',
+        direction: 'INCOMING',
+        messageText: messageContent,
+        phone: canonicalFrom || fromJid,
+        occurredAt: new Date().toISOString(),
+      });
     }
 
-    await this.notifyConfirmationEvent({
-      appointmentId: resolvedPending.appointmentId,
-      type: 'INCOMING',
-      direction: 'INCOMING',
-      messageText: messageContent,
-      phone: canonicalFrom || fromJid,
-      occurredAt: new Date().toISOString(),
-    });
+    if (!resolvedPending || !resolvedAction) {
+      if (resolvedPending?.appointmentId) {
+        await this.sendMessageSimple(
+          phone,
+          fromJid,
+          'Nao entendi sua resposta. Responda com "Confirmar" ou "Cancelar". Se preferir, envie "1" para confirmar ou "2" para cancelar.',
+          resolvedPending.appointmentId,
+        );
+      }
+      return;
+    }
 
     if (resolvedAction === 'CONFIRM') {
       return this.confirm(resolvedPending, phone, fromJid);
@@ -2788,8 +2800,28 @@ Esta e uma mensagem automatica.`;
   private async detectPendingIntent(
     phone: string,
     messageContent: string,
+    options?: {
+      allowNumericShortcuts?: boolean;
+    },
   ): Promise<'confirmar' | 'cancelar' | 'inconclusivo'> {
     const normalizedText = this.normalize(messageContent);
+    const allowNumericShortcuts = options?.allowNumericShortcuts ?? true;
+
+    if (allowNumericShortcuts) {
+      if (normalizedText === '1') {
+        this.logger.log(
+          `[${phone}] Intenção 'Confirmar' detectada por atalho numerico "1"`,
+        );
+        return 'confirmar';
+      }
+
+      if (normalizedText === '2') {
+        this.logger.log(
+          `[${phone}] Intenção 'Cancelar' detectada por atalho numerico "2"`,
+        );
+        return 'cancelar';
+      }
+    }
 
     const confirmKeywords = ['confirmar', 'confirmado', 'confirmo', 'sim', 'ok'];
     const cancelKeywords = ['cancelar', 'cancelado', 'cancelo', 'nao'];

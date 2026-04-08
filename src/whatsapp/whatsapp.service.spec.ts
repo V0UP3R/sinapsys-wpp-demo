@@ -20,6 +20,7 @@ describe('WhatsappService retry policy', () => {
 
   const pendingRepo = {
     delete: jest.fn(),
+    find: jest.fn(),
   };
 
   const service = new WhatsappService(
@@ -160,6 +161,75 @@ describe('WhatsappService retry policy', () => {
 
     expect(reply).toContain(
       'Encontrei mais de um atendimento pendente para confirmar, entao ainda nao foi feita nenhuma alteracao',
+    );
+  });
+
+  it('aceita 1 para confirmar e 2 para cancelar em pendencia simples', async () => {
+    await expect(
+      (service as any).detectPendingIntent('19999999999', '1'),
+    ).resolves.toBe('confirmar');
+
+    await expect(
+      (service as any).detectPendingIntent('19999999999', '2'),
+    ).resolves.toBe('cancelar');
+  });
+
+  it('registra INCOMING e pede repeticao quando a resposta fica inconclusiva', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const message = {
+      key: {
+        id: 'msg-1',
+        remoteJid: '5511999999999@c.us',
+      },
+      messageTimestamp: now,
+    };
+
+    pendingRepo.find.mockResolvedValue([
+      {
+        id: 'pending-1',
+        appointmentId: 16245,
+        phone: '5511999999999@c.us',
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 60000),
+      },
+    ]);
+
+    jest
+      .spyOn(service as any, 'extractMessageText')
+      .mockReturnValue('1x');
+    jest
+      .spyOn(service as any, 'notifyAssistantIncomingMessage')
+      .mockResolvedValue(null);
+    jest
+      .spyOn(service as any, 'collectPendingTargets')
+      .mockResolvedValue([
+        { appointmentId: 16245, details: {}, pendingIds: ['pending-1'] },
+      ]);
+    jest
+      .spyOn(service as any, 'notifyConfirmationEvent')
+      .mockResolvedValue(undefined);
+    jest
+      .spyOn(service as any, 'sendMessageSimple')
+      .mockResolvedValue({
+        success: true,
+        message: 'ok',
+      });
+
+    await (service as any).handleIncoming('19997588383', message);
+
+    expect((service as any).notifyConfirmationEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        appointmentId: 16245,
+        type: 'INCOMING',
+        direction: 'INCOMING',
+        messageText: '1x',
+      }),
+    );
+    expect((service as any).sendMessageSimple).toHaveBeenCalledWith(
+      '19997588383',
+      '5511999999999@c.us',
+      expect.stringContaining('Nao entendi sua resposta'),
+      16245,
     );
   });
 
