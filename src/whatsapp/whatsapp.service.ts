@@ -1571,11 +1571,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     phone: string,
     to: string,
     text: string,
-    appointmentId: number,
+    appointmentId?: number,
     metadata?: Pick<
       MessagePayload,
       'triggerSource' | 'triggerType' | 'confirmationContext'
     >,
+    createPendingConfirmation: boolean = appointmentId !== undefined,
   ): Promise<SendMessageResult> {
     const sock = this.sessions.get(phone);
     if (!sock || !sock.user) {
@@ -1593,7 +1594,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       isReply: false,
       skipValidation: false,
       appointmentId,
-      createPendingConfirmation: true,
+      createPendingConfirmation:
+        createPendingConfirmation && appointmentId !== undefined,
       triggerSource: metadata?.triggerSource ?? null,
       triggerType: metadata?.triggerType ?? null,
       confirmationContext: metadata?.confirmationContext ?? null,

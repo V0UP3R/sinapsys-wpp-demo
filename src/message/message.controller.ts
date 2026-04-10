@@ -51,7 +51,8 @@ export class MessageController {
       phone: string;
       to: string;
       message: string;
-      appointmentId: number;
+      appointmentId?: number;
+      createPendingConfirmation?: boolean;
       triggerType?: string | null;
       triggerSource?: string | null;
       confirmationContext?: {
@@ -76,9 +77,22 @@ export class MessageController {
       throw new BadRequestException('Campo "message" é obrigatório.');
     }
 
-    const appointmentId = Number(body?.appointmentId);
-    if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
-      throw new BadRequestException('Campo "appointmentId" inválido.');
+    const hasAppointmentId =
+      body?.appointmentId !== undefined && body?.appointmentId !== null;
+    const appointmentId = hasAppointmentId ? Number(body.appointmentId) : undefined;
+    const createPendingConfirmation =
+      body?.createPendingConfirmation ?? hasAppointmentId;
+
+    if (hasAppointmentId) {
+      if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
+        throw new BadRequestException('Campo "appointmentId" inválido.');
+      }
+    }
+
+    if (createPendingConfirmation && appointmentId === undefined) {
+      throw new BadRequestException(
+        'Campo "appointmentId" é obrigatório quando createPendingConfirmation=true.',
+      );
     }
 
     const result = await this.whatsappService.sendMessage(
@@ -91,6 +105,7 @@ export class MessageController {
         triggerSource: body.triggerSource ?? null,
         confirmationContext: body.confirmationContext ?? null,
       },
+      createPendingConfirmation,
     );
 
     if (!result.success) {
